@@ -77,7 +77,8 @@ private[akka] class TcpListenStreamActor(bindCmd: Tcp.Bind, requester: ActorRef,
 
   override protected def transfer(): TransferState = {
     val (connected, connection) = incomingConnections.dequeueInputElement().asInstanceOf[(Connected, ActorRef)]
-    val tcpStreamActor = context.actorOf(TcpStreamActor.inboundProps(connection, settings))
+    val tcpStreamActor = context.actorOf(TcpStreamActor.inboundProps(connection, settings).
+      withDispatcher(context.props.dispatcher))
     val processor = new ActorProcessor[ByteString, ByteString](tcpStreamActor)
     primaryOutputs.enqueueOutputElement(StreamTcp.IncomingTcpConnection(connected.remoteAddress, processor, processor))
     NeedsInputAndDemand

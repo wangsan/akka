@@ -201,14 +201,14 @@ private[akka] class StreamTcpManager extends Actor {
       val processorActor = context.actorOf(TcpStreamActor.outboundProps(
         Tcp.Connect(remoteAddress, localAddress, options, timeout, pullMode = true),
         requester = sender(),
-        settings), name = encName("client", remoteAddress))
+        settings).withDispatcher(context.props.dispatcher), name = encName("client", remoteAddress))
       processorActor ! ExposedProcessor(new ActorProcessor[ByteString, ByteString](processorActor))
 
     case StreamTcp.Bind(settings, localAddress, backlog, options) ⇒
       val publisherActor = context.actorOf(TcpListenStreamActor.props(
         Tcp.Bind(context.system.deadLetters, localAddress, backlog, options, pullMode = true),
         requester = sender(),
-        settings), name = encName("server", localAddress))
+        settings).withDispatcher(context.props.dispatcher), name = encName("server", localAddress))
       publisherActor ! ExposedPublisher(new ActorPublisher(publisherActor))
   }
 
