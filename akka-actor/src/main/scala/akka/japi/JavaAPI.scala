@@ -1,17 +1,18 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.japi
 
-import language.implicitConversions
+import java.util.Collections.{ emptyList, singletonList }
+
+import akka.util.Collections.EmptyImmutableSeq
 
 import scala.collection.immutable
+import scala.language.implicitConversions
 import scala.reflect.ClassTag
-import scala.util.control.NoStackTrace
 import scala.runtime.AbstractPartialFunction
-import akka.util.Collections.EmptyImmutableSeq
-import java.util.Collections.{ emptyList, singletonList }
+import scala.util.control.NoStackTrace
 
 /**
  * A Function interface. Used to create first-class-functions is Java.
@@ -43,6 +44,27 @@ trait Procedure[T] {
 trait Effect {
   @throws(classOf[Exception])
   def apply(): Unit
+}
+
+/**
+ * Java API: Defines a criteria and determines whether the parameter meets this criteria.
+ */
+trait Predicate[T] {
+  def test(param: T): Boolean
+}
+
+/**
+ * Java API
+ * Represents a pair (tuple) of two elements.
+ *
+ * Additional tuple types for 3 to 22 values are defined in the `akka.japi.tuple` package, e.g. [[akka.japi.tuple.Tuple3]].
+ */
+@SerialVersionUID(1L)
+case class Pair[A, B](first: A, second: B) {
+  def toScala: (A, B) = (first, second)
+}
+object Pair {
+  def create[A, B](first: A, second: B): Pair[A, B] = new Pair(first, second)
 }
 
 /**
@@ -117,6 +139,11 @@ abstract class JavaPartialFunction[A, B] extends AbstractPartialFunction[A, B] {
  */
 sealed abstract class Option[A] extends java.lang.Iterable[A] {
   def get: A
+  /**
+   * Returns <code>a</code> if this is <code>some(a)</code> or <code>defaultValue</code> if
+   * this is <code>none</code>.
+   */
+  def getOrElse[B >: A](defaultValue: B): B
   def isEmpty: Boolean
   def isDefined: Boolean = !isEmpty
   def asScala: scala.Option[A]
@@ -154,6 +181,7 @@ object Option {
    */
   final case class Some[A](v: A) extends Option[A] {
     def get: A = v
+    def getOrElse[B >: A](defaultValue: B): B = v
     def isEmpty: Boolean = false
     def asScala: scala.Some[A] = scala.Some(v)
   }
@@ -163,6 +191,7 @@ object Option {
    */
   private case object None extends Option[Nothing] {
     def get: Nothing = throw new NoSuchElementException("None.get")
+    def getOrElse[B](defaultValue: B): B = defaultValue
     def isEmpty: Boolean = true
     def asScala: scala.None.type = scala.None
   }
@@ -211,9 +240,21 @@ object Util {
 
   def immutableSingletonSeq[T](value: T): immutable.Seq[T] = value :: Nil
 
+  def javaArrayList[T](seq: Seq[T]): java.util.List[T] = {
+    val size = seq.size
+    val l = new java.util.ArrayList[T](size)
+    seq.foreach(l.add) // TODO could be optimised based on type of Seq
+    l
+  }
+
   /**
    * Turns an [[java.lang.Iterable]] into an immutable Scala IndexedSeq (by copying it).
    */
   def immutableIndexedSeq[T](iterable: java.lang.Iterable[T]): immutable.IndexedSeq[T] =
     immutableSeq(iterable).toVector
+
+  // TODO in case we decide to pull in scala-java8-compat methods below could be removed - https://github.com/akka/akka/issues/16247
+
+  def option[T](jOption: java.util.Optional[T]): scala.Option[T] =
+    scala.Option(jOption.orElse(null.asInstanceOf[T]))
 }

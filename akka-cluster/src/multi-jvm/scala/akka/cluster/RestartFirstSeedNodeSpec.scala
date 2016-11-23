@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -10,6 +10,7 @@ import org.scalatest.BeforeAndAfter
 import akka.remote.testkit.MultiNodeConfig
 import akka.remote.testkit.MultiNodeSpec
 import akka.testkit._
+
 import scala.concurrent.duration._
 import akka.actor.Address
 import akka.actor.ActorSystem
@@ -18,6 +19,7 @@ import akka.actor.Actor
 import akka.actor.RootActorPath
 import akka.cluster.MemberStatus._
 import akka.actor.Deploy
+import akka.remote.RARP
 
 object RestartFirstSeedNodeMultiJvmSpec extends MultiNodeConfig {
   val seed1 = role("seed1")
@@ -25,7 +27,10 @@ object RestartFirstSeedNodeMultiJvmSpec extends MultiNodeConfig {
   val seed3 = role("seed3")
 
   commonConfig(debugConfig(on = false).
-    withFallback(ConfigFactory.parseString("akka.cluster.auto-down-unreachable-after = 0s")).
+    withFallback(ConfigFactory.parseString("""
+      akka.cluster.auto-down-unreachable-after = off
+      akka.cluster.retry-unsuccessful-join-after = 3s
+      """)).
     withFallback(MultiNodeClusterSpec.clusterConfig))
 }
 
@@ -47,16 +52,19 @@ abstract class RestartFirstSeedNodeSpec
   def missingSeed = address(seed3).copy(port = Some(61313))
   def seedNodes: immutable.IndexedSeq[Address] = Vector(seedNode1Address, seed2, seed3, missingSeed)
 
-  lazy val restartedSeed1System = ActorSystem(system.name,
-    ConfigFactory.parseString("akka.remote.netty.tcp.port=" + seedNodes.head.port.get).
-      withFallback(system.settings.config))
+  lazy val restartedSeed1System = ActorSystem(
+    system.name,
+    ConfigFactory.parseString(
+      if (RARP(system).provider.remoteSettings.Artery.Enabled)
+        "akka.remote.artery.canonical.port=" + seedNodes.head.port.get
+      else
+        "akka.remote.netty.tcp.port=" + seedNodes.head.port.get
+    ).withFallback(system.settings.config))
 
   override def afterAll(): Unit = {
     runOn(seed1) {
-      if (seed1System.isTerminated)
-        shutdown(restartedSeed1System)
-      else
-        shutdown(seed1System)
+      shutdown(
+        if (seed1System.whenTerminated.isCompleted) restartedSeed1System else seed1System)
     }
     super.afterAll()
   }
@@ -89,8 +97,8 @@ abstract class RestartFirstSeedNodeSpec
       // now we can join seed1System, seed2, seed3 together
       runOn(seed1) {
         Cluster(seed1System).joinSeedNodes(seedNodes)
-        awaitAssert(Cluster(seed1System).readView.members.size should be(3))
-        awaitAssert(Cluster(seed1System).readView.members.map(_.status) should be(Set(Up)))
+        awaitAssert(Cluster(seed1System).readView.members.size should ===(3))
+        awaitAssert(Cluster(seed1System).readView.members.map(_.status) should ===(Set(Up)))
       }
       runOn(seed2, seed3) {
         cluster.joinSeedNodes(seedNodes)
@@ -102,17 +110,15 @@ abstract class RestartFirstSeedNodeSpec
       runOn(seed1) {
         shutdown(seed1System, remainingOrDefault)
       }
-      runOn(seed2, seed3) {
-        awaitMembersUp(2, canNotBePartOfMemberRing = Set(seedNodes.head))
-        awaitAssert(clusterView.unreachableMembers.map(_.address) should not contain (seedNodes.head))
-      }
       enterBarrier("seed1-shutdown")
 
       // then start restartedSeed1System, which has the same address as seed1System
       runOn(seed1) {
         Cluster(restartedSeed1System).joinSeedNodes(seedNodes)
-        awaitAssert(Cluster(restartedSeed1System).readView.members.size should be(3))
-        awaitAssert(Cluster(restartedSeed1System).readView.members.map(_.status) should be(Set(Up)))
+        within(20.seconds) {
+          awaitAssert(Cluster(restartedSeed1System).readView.members.size should ===(3))
+          awaitAssert(Cluster(restartedSeed1System).readView.members.map(_.status) should ===(Set(Up)))
+        }
       }
       runOn(seed2, seed3) {
         awaitMembersUp(3)

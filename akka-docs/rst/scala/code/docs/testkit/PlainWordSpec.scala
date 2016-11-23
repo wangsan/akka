@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.testkit
 
@@ -7,28 +7,15 @@ package docs.testkit
 import akka.actor.ActorSystem
 import akka.actor.Actor
 import akka.actor.Props
-import akka.testkit.TestKit
+import akka.testkit.{ TestActors, TestKit, ImplicitSender }
 import org.scalatest.WordSpecLike
 import org.scalatest.Matchers
 import org.scalatest.BeforeAndAfterAll
-import akka.testkit.ImplicitSender
-
-object MySpec {
-  class EchoActor extends Actor {
-    def receive = {
-      case x => sender() ! x
-    }
-  }
-}
 
 //#implicit-sender
-class MySpec(_system: ActorSystem) extends TestKit(_system) with ImplicitSender
+class MySpec() extends TestKit(ActorSystem("MySpec")) with ImplicitSender
   with WordSpecLike with Matchers with BeforeAndAfterAll {
   //#implicit-sender
-
-  def this() = this(ActorSystem("MySpec"))
-
-  import MySpec._
 
   override def afterAll {
     TestKit.shutdownActorSystem(system)
@@ -37,7 +24,7 @@ class MySpec(_system: ActorSystem) extends TestKit(_system) with ImplicitSender
   "An Echo actor" must {
 
     "send back messages unchanged" in {
-      val echo = system.actorOf(Props[EchoActor])
+      val echo = system.actorOf(TestActors.echoActorProps)
       echo ! "hello world"
       expectMsg("hello world")
     }

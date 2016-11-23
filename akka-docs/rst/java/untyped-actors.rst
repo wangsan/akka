@@ -54,7 +54,7 @@ dispatcher to use, see more below). Here are some examples of how to create a
 The second line shows how to pass constructor arguments to the :class:`Actor`
 being created. The presence of a matching constructor is verified during
 construction of the :class:`Props` object, resulting in an
-:class:`IllegalArgumentEception` if no or multiple matching constructors are
+:class:`IllegalArgumentException` if no or multiple matching constructors are
 found.
 
 The third line demonstrates the use of a :class:`Creator<T extends Actor>`. The
@@ -83,6 +83,13 @@ usage of the :class:`Creator`-based methods which statically verify that the
 used constructor actually exists instead relying only on a runtime check.
 
 .. includecode:: code/docs/actor/UntypedActorDocTest.java#props-factory
+
+Another good practice is to declare what messages an Actor can receive
+as close to the actor definition as possible (e.g. as static classes
+inside the Actor or using other suitable class), which makes it easier to know
+what it can receive.
+
+.. includecode:: code/docs/actor/UntypedActorDocTest.java#messages-in-companion
 
 Creating Actors with Props
 --------------------------
@@ -151,14 +158,14 @@ __ Props_
 Techniques for dependency injection and integration with dependency injection frameworks
 are described in more depth in the
 `Using Akka with Dependency Injection <http://letitcrash.com/post/55958814293/akka-dependency-injection>`_
-guideline and the `Akka Java Spring <http://www.typesafe.com/activator/template/akka-java-spring>`_ tutorial
-in Typesafe Activator.
+guideline and the `Akka Java Spring <http://www.lightbend.com/activator/template/akka-java-spring>`_ tutorial
+in Lightbend Activator.
 
 The Inbox
 ---------
 
 When writing code outside of actors which shall communicate with actors, the
-``ask`` pattern can be a solution (see below), but there are two thing it
+``ask`` pattern can be a solution (see below), but there are two things it
 cannot do: receiving multiple replies (e.g. by subscribing an :class:`ActorRef`
 to a notification service) and watching other actors’ lifecycle. For these
 purposes there is the :class:`Inbox` class:
@@ -239,7 +246,15 @@ that point the appropriate lifecycle events are called and watching actors
 are notified of the termination. After the incarnation is stopped, the path can
 be reused again by creating an actor with ``actorOf()``. In this case the
 name of the new incarnation will be the same as the previous one but the
-UIDs will differ.
+UIDs will differ. An actor can be stopped by the actor itself, another actor
+or the ``ActorSystem`` (see :ref:`stopping-actors-java`).
+
+.. note::
+
+   It is important to note that Actors do not stop automatically when no longer
+   referenced, every Actor that is created must also explicitly be destroyed.
+   The only simplification is that stopping a parent Actor will also recursively
+   stop all the child Actors that this parent has created.
 
 An ``ActorRef`` always represents an incarnation (path and UID) not just a
 given path. Therefore if an actor is stopped and a new one with the same
@@ -376,6 +391,18 @@ result:
 
 .. includecode:: code/docs/actor/UntypedActorDocTest.java#selection-local
 
+.. note::
+
+  It is always preferable to communicate with other Actors using their ActorRef
+  instead of relying upon ActorSelection. Exceptions are
+
+    * sending messages using the :ref:`at-least-once-delivery-java` facility
+    * initiating first contact with a remote system
+
+  In all other cases ActorRefs can be provided during Actor creation or
+  initialization, passing them from parent to child or introducing Actors by
+  sending their ActorRefs to other Actors within messages.
+
 The supplied path is parsed as a :class:`java.net.URI`, which basically means
 that it is split on ``/`` into path elements. If the path starts with ``/``, it
 is absolute and the look-up starts at the root guardian (which is the parent of
@@ -418,17 +445,6 @@ Remote actor addresses may also be looked up, if :ref:`remoting <remoting-java>`
 .. includecode:: code/docs/actor/UntypedActorDocTest.java#selection-remote
 
 An example demonstrating remote actor look-up is given in :ref:`remote-sample-java`.
-
-.. note::
-
-  ``actorFor`` is deprecated in favor of ``actorSelection`` because actor references
-  acquired with ``actorFor`` behave differently for local and remote actors.
-  In the case of a local actor reference, the named actor needs to exist before the
-  lookup, or else the acquired reference will be an :class:`EmptyLocalActorRef`.
-  This will be true even if an actor with that exact path is created after acquiring
-  the actor reference. For remote actor references acquired with `actorFor` the
-  behaviour is different and sending messages to such a reference will under the hood
-  look up the actor by path on the remote system for every message send.
 
 Messages and immutability
 =========================
@@ -484,6 +500,8 @@ different one. Outside of an actor and if no reply is needed the second
 argument can be ``null``; if a reply is needed outside of an actor you can use
 the ask-pattern described next..
 
+.. _actors-ask-java:
+
 Ask: Send-And-Receive-Future
 ----------------------------
 
@@ -507,6 +525,10 @@ complete the returned :class:`Future` with a value. The ``ask`` operation
 involves creating an internal actor for handling this reply, which needs to
 have a timeout after which it is destroyed in order not to leak resources; see
 more below.
+
+.. note::
+    A Java 8 variant of the ``ask`` pattern that returns a ``CompletionStage`` instead of a Scala ``Future``
+    is available in the ``akka.pattern.PatternsCS`` object.
 
 .. warning::
 
@@ -593,6 +615,10 @@ periods). Pass in `Duration.Undefined` to switch off this feature.
 
 .. includecode:: code/docs/actor/MyReceiveTimeoutUntypedActor.java#receive-timeout
 
+Messages marked with ``NotInfluenceReceiveTimeout`` will not reset the timer. This can be useful when
+``ReceiveTimeout`` should be fired by external inactivity but not influenced by internal activity,
+e.g. scheduled tick messages.
+
 .. _stopping-actors-java:
 
 Stopping actors
@@ -600,9 +626,11 @@ Stopping actors
 
 Actors are stopped by invoking the :meth:`stop` method of a ``ActorRefFactory``,
 i.e. ``ActorContext`` or ``ActorSystem``. Typically the context is used for stopping
-child actors and the system for stopping top level actors. The actual termination of
-the actor is performed asynchronously, i.e. :meth:`stop` may return before the actor is
-stopped.
+the actor itself or child actors and the system for stopping top level actors. The actual
+termination of the actor is performed asynchronously, i.e. :meth:`stop` may return before
+the actor is stopped.
+
+.. includecode:: code/docs/actor/MyStoppingActor.java#my-stopping-actor
 
 Processing of the current message, if any, will continue before the actor is stopped,
 but additional messages in the mailbox will not be processed. By default these
@@ -621,7 +649,7 @@ actors does not respond (i.e. processing a message for extended periods of time
 and therefore not receiving the stop command), this whole process will be
 stuck.
 
-Upon :meth:`ActorSystem.shutdown()`, the system guardian actors will be
+Upon :meth:`ActorSystem.terminate()`, the system guardian actors will be
 stopped, and the aforementioned process will ensure proper termination of the
 whole system.
 
@@ -724,6 +752,8 @@ in the long run, otherwise this amounts to a memory leak (which is why this
 behavior is not the default).
 
 .. includecode:: code/docs/actor/UntypedActorSwapper.java#swapper
+
+.. _stash-java:
 
 Stash
 =====

@@ -1,11 +1,12 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.testconductor
 
 import language.postfixOps
 import com.typesafe.config.ConfigFactory
-import akka.actor.{ Props, Actor, ActorIdentity, Identify, Deploy }
+import akka.actor.{ Actor, ActorIdentity, Deploy, Identify, Props }
+
 import scala.concurrent.Await
 import scala.concurrent.Awaitable
 import scala.concurrent.duration._
@@ -13,11 +14,13 @@ import akka.testkit.ImplicitSender
 import akka.testkit.LongRunningTest
 import java.net.InetSocketAddress
 import java.net.InetAddress
-import akka.remote.testkit.{ STMultiNodeSpec, MultiNodeSpec, MultiNodeConfig }
+
+import akka.remote.RemotingMultiNodeSpec
+import akka.remote.testkit.{ MultiNodeConfig, MultiNodeSpec, STMultiNodeSpec }
 import akka.remote.transport.ThrottlerTransportAdapter.Direction
 
 object TestConductorMultiJvmSpec extends MultiNodeConfig {
-  commonConfig(debugConfig(on = false))
+  commonConfig(debugConfig(on = false).withFallback(RemotingMultiNodeSpec.arteryFlightRecordingConf))
 
   val master = role("master")
   val slave = role("slave")
@@ -28,7 +31,7 @@ object TestConductorMultiJvmSpec extends MultiNodeConfig {
 class TestConductorMultiJvmNode1 extends TestConductorSpec
 class TestConductorMultiJvmNode2 extends TestConductorSpec
 
-class TestConductorSpec extends MultiNodeSpec(TestConductorMultiJvmSpec) with STMultiNodeSpec with ImplicitSender {
+class TestConductorSpec extends RemotingMultiNodeSpec(TestConductorMultiJvmSpec) {
 
   import TestConductorMultiJvmSpec._
 
@@ -74,7 +77,7 @@ class TestConductorSpec extends MultiNodeSpec(TestConductorMultiJvmSpec) with ST
 
       within(0.6 seconds, 2 seconds) {
         expectMsg(500 millis, 0)
-        receiveN(9) should be(1 to 9)
+        receiveN(9) should ===(1 to 9)
       }
 
       enterBarrier("throttled_send2")
@@ -96,7 +99,7 @@ class TestConductorSpec extends MultiNodeSpec(TestConductorMultiJvmSpec) with ST
 
       within(min, max) {
         expectMsg(500 millis, 10)
-        receiveN(9) should be(11 to 19)
+        receiveN(9) should ===(11 to 19)
       }
 
       enterBarrier("throttled_recv2")

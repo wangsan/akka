@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.actor
 
@@ -9,7 +9,6 @@ import scala.util.control.NonFatal
 import scala.util.{ Try, Success, Failure }
 import scala.collection.immutable
 import scala.concurrent.duration.FiniteDuration
-import scala.concurrent.duration.Duration
 import scala.reflect.ClassTag
 import scala.concurrent.{ Await, Future }
 import akka.japi.{ Creator, Option ⇒ JOption }
@@ -20,7 +19,6 @@ import akka.serialization.{ JavaSerializer, SerializationExtension }
 import akka.dispatch._
 import java.util.concurrent.atomic.{ AtomicReference ⇒ AtomVar }
 import java.util.concurrent.TimeoutException
-import java.util.concurrent.TimeUnit.MILLISECONDS
 import java.io.ObjectStreamException
 import java.lang.reflect.{ InvocationTargetException, Method, InvocationHandler, Proxy }
 import akka.pattern.AskTimeoutException
@@ -59,7 +57,7 @@ trait TypedActorFactory {
   }
 
   /**
-   * Returns wether the supplied AnyRef is a TypedActor proxy or not
+   * Returns whether the supplied AnyRef is a TypedActor proxy or not
    */
   def isTypedActor(proxyOrNot: AnyRef): Boolean
 
@@ -138,7 +136,7 @@ object TypedActor extends ExtensionId[TypedActorExtension] with ExtensionIdProvi
     /**
      * Invokes the Method on the supplied instance
      *
-     * @throws the underlying exception if there's an InvocationTargetException thrown on the invocation
+     * Throws the underlying exception if there's an InvocationTargetException thrown on the invocation.
      */
     def apply(instance: AnyRef): AnyRef = try {
       parameters match {
@@ -217,8 +215,9 @@ object TypedActor extends ExtensionId[TypedActorExtension] with ExtensionIdProvi
    *
    * NEVER EXPOSE "this" to someone else, always use "self[TypeOfInterface(s)]"
    *
-   * @throws IllegalStateException if called outside of the scope of a method on this TypedActor
-   * @throws ClassCastException if the supplied type T isn't the type of the proxy associated with this TypedActor
+   * Throws IllegalStateException if called outside of the scope of a method on this TypedActor.
+   *
+   * Throws ClassCastException if the supplied type T isn't the type of the proxy associated with this TypedActor.
    */
   def self[T <: AnyRef] = selfReference.get.asInstanceOf[T] match {
     case null ⇒ throw new IllegalStateException("Calling TypedActor.self outside of a TypedActor implementation method!")
@@ -293,7 +292,7 @@ object TypedActor extends ExtensionId[TypedActorExtension] with ExtensionIdProvi
       }
     }
 
-    protected def withContext[T](unitOfWork: ⇒ T): T = {
+    protected def withContext[U](unitOfWork: ⇒ U): U = {
       TypedActor.selfReference set proxyVar.get
       TypedActor.currentContext set context
       try unitOfWork finally {
@@ -524,11 +523,11 @@ object TypedProps {
 @SerialVersionUID(1L)
 final case class TypedProps[T <: AnyRef] protected[TypedProps] (
   interfaces: immutable.Seq[Class[_]],
-  creator: () ⇒ T,
-  dispatcher: String = TypedProps.defaultDispatcherId,
-  deploy: Deploy = Props.defaultDeploy,
-  timeout: Option[Timeout] = TypedProps.defaultTimeout,
-  loader: Option[ClassLoader] = TypedProps.defaultLoader) {
+  creator:    () ⇒ T,
+  dispatcher: String                  = TypedProps.defaultDispatcherId,
+  deploy:     Deploy                  = Props.defaultDeploy,
+  timeout:    Option[Timeout]         = TypedProps.defaultTimeout,
+  loader:     Option[ClassLoader]     = TypedProps.defaultLoader) {
 
   /**
    * Uses the supplied class as the factory for the TypedActor implementation,
@@ -537,7 +536,8 @@ final case class TypedProps[T <: AnyRef] protected[TypedProps] (
    * appended in the sequence of interfaces.
    */
   def this(implementation: Class[T]) =
-    this(interfaces = TypedProps.extractInterfaces(implementation),
+    this(
+      interfaces = TypedProps.extractInterfaces(implementation),
       creator = instantiator(implementation))
 
   /**
@@ -547,7 +547,8 @@ final case class TypedProps[T <: AnyRef] protected[TypedProps] (
    * appended in the sequence of interfaces.
    */
   def this(interface: Class[_ >: T], implementation: Creator[T]) =
-    this(interfaces = TypedProps.extractInterfaces(interface),
+    this(
+      interfaces = TypedProps.extractInterfaces(interface),
       creator = implementation.create _)
 
   /**
@@ -557,7 +558,8 @@ final case class TypedProps[T <: AnyRef] protected[TypedProps] (
    * appended in the sequence of interfaces.
    */
   def this(interface: Class[_ >: T], implementation: Class[T]) =
-    this(interfaces = TypedProps.extractInterfaces(interface),
+    this(
+      interfaces = TypedProps.extractInterfaces(interface),
       creator = instantiator(implementation))
 
   /**
@@ -653,7 +655,7 @@ class TypedActorExtension(val system: ExtendedActorSystem) extends TypedActorFac
   }
 
   /**
-   * Returns wether the supplied AnyRef is a TypedActor proxy or not
+   * Returns whether the supplied AnyRef is a TypedActor proxy or not
    */
   def isTypedActor(proxyOrNot: AnyRef): Boolean = invocationHandlerFor(proxyOrNot) ne null
 
@@ -674,7 +676,7 @@ class TypedActorExtension(val system: ExtendedActorSystem) extends TypedActorFac
       proxy
     } else {
       proxyVar set proxy // Chicken and egg situation we needed to solve, set the proxy so that we can set the self-reference inside each receive
-      actorVar set actorRef //Make sure the InvocationHandler gets ahold of the actor reference, this is not a problem since the proxy hasn't escaped this method yet
+      actorVar set actorRef //Make sure the InvocationHandler gets a hold of the actor reference, this is not a problem since the proxy hasn't escaped this method yet
       proxyVar.get
     }
   }

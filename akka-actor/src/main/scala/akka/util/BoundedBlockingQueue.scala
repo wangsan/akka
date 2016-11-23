@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.util
@@ -11,9 +11,8 @@ import annotation.tailrec
 
 /**
  * BoundedBlockingQueue wraps any Queue and turns the result into a BlockingQueue with a limited capacity.
- * @param maxCapacity - the maximum capacity of this Queue, needs to be > 0
+ * @param maxCapacity - the maximum capacity of this Queue, needs to be &gt; 0
  * @param backing - the backing Queue
- * @tparam E - The type of the contents of this Queue
  */
 class BoundedBlockingQueue[E <: AnyRef](
   val maxCapacity: Int, private val backing: Queue[E]) extends AbstractQueue[E] with BlockingQueue[E] {
@@ -240,7 +239,7 @@ class BoundedBlockingQueue[E <: AnyRef](
           elements(last).asInstanceOf[E]
         }
 
-        def remove() {
+        override def remove() {
           if (last < 0) throw new IllegalStateException
           val target = elements(last)
           last = -1 //To avoid 2 subsequent removes without a next in between

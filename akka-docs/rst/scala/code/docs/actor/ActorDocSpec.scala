@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.actor
 
@@ -24,6 +24,7 @@ import scala.concurrent.Await
 //#my-actor
 class MyActor extends Actor {
   val log = Logging(context.system, this)
+
   def receive = {
     case "test" => log.info("received test")
     case _      => log.info("received unknown message")
@@ -49,12 +50,26 @@ class ActorWithArgs(arg: String) extends Actor {
   def receive = { case _ => () }
 }
 
+//#actor-with-value-class-argument
+class Argument(val value: String) extends AnyVal
+class ValueClassActor(arg: Argument) extends Actor {
+  def receive = { case _ => () }
+}
+
+object ValueClassActor {
+  def props1(arg: Argument) = Props(classOf[ValueClassActor], arg) // fails at runtime
+  def props2(arg: Argument) = Props(classOf[ValueClassActor], arg.value) // ok
+  def props3(arg: Argument) = Props(new ValueClassActor(arg)) // ok
+}
+//#actor-with-value-class-argument
+
 class DemoActorWrapper extends Actor {
   //#props-factory
   object DemoActor {
     /**
      * Create Props for an actor of this type.
-     * @param magciNumber The magic number to be passed to this actor’s constructor.
+     *
+     * @param magicNumber The magic number to be passed to this actor’s constructor.
      * @return a Props for creating this actor, which can then be further configured
      *         (e.g. calling `.withDispatcher()` on it)
      */
@@ -78,6 +93,24 @@ class DemoActorWrapper extends Actor {
     //#props-factory
   }
   //#props-factory
+
+  def receive = Actor.emptyBehavior
+}
+
+class ActorWithMessagesWrapper {
+  //#messages-in-companion
+  object MyActor {
+    case class Greeting(from: String)
+    case object Goodbye
+  }
+  class MyActor extends Actor with ActorLogging {
+    import MyActor._
+    def receive = {
+      case Greeting(greeter) => log.info(s"I was greeted by $greeter.")
+      case Goodbye           => log.info("Someone said goodbye to me.")
+    }
+  }
+  //#messages-in-companion
 
   def receive = Actor.emptyBehavior
 }
@@ -116,6 +149,25 @@ class ReplyException extends Actor {
 
   def operation(): String = { "Hi" }
 
+}
+
+class StoppingActorsWrapper {
+  //#stoppingActors-actor
+  class MyActor extends Actor {
+
+    val child: ActorRef = ???
+
+    def receive = {
+      case "interrupt-child" =>
+        context stop child
+
+      case "done" =>
+        context stop self
+    }
+
+  }
+
+  //#stoppingActors-actor
 }
 
 //#gracefulStop-actor
@@ -211,7 +263,7 @@ class Consumer extends Actor with ActorLogging with ConsumerBehavior {
 class ProducerConsumer extends Actor with ActorLogging
   with ProducerBehavior with ConsumerBehavior {
 
-  def receive = producerBehavior orElse consumerBehavior
+  def receive = producerBehavior.orElse[Any, Unit](consumerBehavior)
 }
 
 // protocol
@@ -220,7 +272,10 @@ final case class Give(thing: Any)
 
 //#receive-orElse
 
-class ActorDocSpec extends AkkaSpec(Map("akka.loglevel" -> "INFO")) {
+class ActorDocSpec extends AkkaSpec("""
+  akka.loglevel = INFO
+  akka.loggers = []
+  """) {
 
   "import context" in {
     new AnyRef {
@@ -270,7 +325,7 @@ class ActorDocSpec extends AkkaSpec(Map("akka.loglevel" -> "INFO")) {
 
     val props1 = Props[MyActor]
     val props2 = Props(new ActorWithArgs("arg")) // careful, see below
-    val props3 = Props(classOf[ActorWithArgs], "arg")
+    val props3 = Props(classOf[ActorWithArgs], "arg") // no support for value class arguments
     //#creating-props
 
     //#creating-props-deprecated
@@ -436,7 +491,7 @@ class ActorDocSpec extends AkkaSpec(Map("akka.loglevel" -> "INFO")) {
       class WatchActor extends Actor {
         val child = context.actorOf(Props.empty, "child")
         context.watch(child) // <-- this is the only call needed for registration
-        var lastSender = system.deadLetters
+        var lastSender = context.system.deadLetters
 
         def receive = {
           case "kill" =>

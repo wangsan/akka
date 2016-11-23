@@ -1,10 +1,10 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.testkit.metrics
 
 import com.codahale.metrics._
-import com.codahale.metrics.graphite.Graphite // todo impl our own
+
 import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration._
@@ -12,7 +12,7 @@ import com.typesafe.config.Config
 import java.util
 import scala.util.matching.Regex
 import scala.collection.mutable
-import akka.testkit.metrics.reporter.{ AkkaGraphiteReporter, AkkaConsoleReporter }
+import akka.testkit.metrics.reporter.AkkaConsoleReporter
 import org.scalatest.Notifying
 import scala.reflect.ClassTag
 
@@ -23,8 +23,7 @@ import scala.reflect.ClassTag
  * please refer to <a href="http://openjdk.java.net/projects/code-tools/jmh/">JMH</a> if that's what you're writing.
  * This trait instead aims to give an high level overview as well as data for trend-analysis of long running tests.
  *
- * Reporting defaults to [[ConsoleReporter]].
- * In order to send registry to Graphite run sbt with the following property: `-Dakka.registry.reporting.0=graphite`.
+ * Reporting defaults to `ConsoleReporter`.
  */
 private[akka] trait MetricsKit extends MetricsKitOps {
   this: Notifying ⇒
@@ -61,22 +60,7 @@ private[akka] trait MetricsKit extends MetricsKitOps {
       }
     }
 
-    def configureGraphiteReporter() {
-      if (settings.Reporters.contains("graphite")) {
-        note(s"MetricsKit: Graphite reporter enabled, sending metrics to: ${settings.GraphiteReporter.Host}:${settings.GraphiteReporter.Port}")
-        val graphite = new Graphite(new InetSocketAddress(settings.GraphiteReporter.Host, settings.GraphiteReporter.Port))
-        val akkaGraphiteReporter = new AkkaGraphiteReporter(registry, settings.GraphiteReporter.Prefix, graphite)
-
-        if (settings.GraphiteReporter.ScheduledReportInterval > Duration.Zero) {
-          akkaGraphiteReporter.start(settings.GraphiteReporter.ScheduledReportInterval.toMillis, TimeUnit.MILLISECONDS)
-        }
-
-        reporters ::= akkaGraphiteReporter
-      }
-    }
-
     configureConsoleReporter()
-    configureGraphiteReporter()
   }
 
   /**
@@ -95,7 +79,7 @@ private[akka] trait MetricsKit extends MetricsKitOps {
    * HINT: this operation can be costy, run outside of your tested code, or rely on scheduled reporting.
    */
   def reportAndClearMetrics() {
-    reporters foreach { _.report() }
+    reportMetrics()
     clearMetrics()
   }
 
@@ -194,7 +178,7 @@ private[akka] object MetricsKit {
   }
 }
 
-/** Provides access to custom Akka [[Metric]]s, with named methods. */
+/** Provides access to custom Akka `com.codahale.metrics.Metric`, with named methods. */
 trait AkkaMetricRegistry {
   this: MetricRegistry ⇒
 
@@ -207,7 +191,7 @@ trait AkkaMetricRegistry {
     for {
       (key, metric) ← getMetrics.asScala
       if clazz.isInstance(metric)
-    } yield key -> metric.asInstanceOf[T]
+    } yield key → metric.asInstanceOf[T]
 }
 
 private[akka] class MetricsKitSettings(config: Config) {
@@ -215,14 +199,6 @@ private[akka] class MetricsKitSettings(config: Config) {
   import akka.util.Helpers._
 
   val Reporters = config.getStringList("akka.test.metrics.reporters")
-
-  object GraphiteReporter {
-    val Prefix = config.getString("akka.test.metrics.reporter.graphite.prefix")
-    lazy val Host = config.getString("akka.test.metrics.reporter.graphite.host").requiring(v ⇒ !v.trim.isEmpty, "akka.test.metrics.reporter.graphite.host was used but was empty!")
-    val Port = config.getInt("akka.test.metrics.reporter.graphite.port")
-
-    val ScheduledReportInterval = config.getMillisDuration("akka.test.metrics.reporter.graphite.scheduled-report-interval")
-  }
 
   object ConsoleReporter {
     val ScheduledReportInterval = config.getMillisDuration("akka.test.metrics.reporter.console.scheduled-report-interval")

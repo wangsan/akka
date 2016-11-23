@@ -1,8 +1,10 @@
 /*
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster.routing
+
+// TODO remove metrics
 
 import org.scalatest.WordSpec
 import org.scalatest.Matchers
@@ -12,7 +14,6 @@ import akka.cluster.Metric
 import akka.cluster.NodeMetrics
 import akka.cluster.StandardMetrics._
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class MetricsSelectorSpec extends WordSpec with Matchers {
 
   val abstractSelector = new CapacityMetricsSelector {
@@ -61,15 +62,15 @@ class MetricsSelectorSpec extends WordSpec with Matchers {
   "CapacityMetricsSelector" must {
 
     "calculate weights from capacity" in {
-      val capacity = Map(a1 -> 0.6, b1 -> 0.3, c1 -> 0.1)
+      val capacity = Map(a1 → 0.6, b1 → 0.3, c1 → 0.1)
       val weights = abstractSelector.weights(capacity)
-      weights should be(Map(c1 -> 1, b1 -> 3, a1 -> 6))
+      weights should ===(Map(c1 → 1, b1 → 3, a1 → 6))
     }
 
     "handle low and zero capacity" in {
-      val capacity = Map(a1 -> 0.0, b1 -> 1.0, c1 -> 0.005, d1 -> 0.004)
+      val capacity = Map(a1 → 0.0, b1 → 1.0, c1 → 0.005, d1 → 0.004)
       val weights = abstractSelector.weights(capacity)
-      weights should be(Map(a1 -> 0, b1 -> 100, c1 -> 1, d1 -> 0))
+      weights should ===(Map(a1 → 0, b1 → 100, c1 → 1, d1 → 0))
     }
 
   }
@@ -77,40 +78,40 @@ class MetricsSelectorSpec extends WordSpec with Matchers {
   "HeapMetricsSelector" must {
     "calculate capacity of heap metrics" in {
       val capacity = HeapMetricsSelector.capacity(nodeMetrics)
-      capacity(a1) should be(0.75 +- 0.0001)
-      capacity(b1) should be(0.75 +- 0.0001)
-      capacity(c1) should be(0.0 +- 0.0001)
-      capacity(d1) should be(0.001953125 +- 0.0001)
+      capacity(a1) should ===(0.75 +- 0.0001)
+      capacity(b1) should ===(0.75 +- 0.0001)
+      capacity(c1) should ===(0.0 +- 0.0001)
+      capacity(d1) should ===(0.001953125 +- 0.0001)
     }
   }
 
   "CpuMetricsSelector" must {
     "calculate capacity of cpuCombined metrics" in {
       val capacity = CpuMetricsSelector.capacity(nodeMetrics)
-      capacity(a1) should be(0.9 +- 0.0001)
-      capacity(b1) should be(0.5 +- 0.0001)
-      capacity(c1) should be(0.0 +- 0.0001)
-      capacity.contains(d1) should be(false)
+      capacity(a1) should ===(0.9 +- 0.0001)
+      capacity(b1) should ===(0.5 +- 0.0001)
+      capacity(c1) should ===(0.0 +- 0.0001)
+      capacity.contains(d1) should ===(false)
     }
   }
 
   "SystemLoadAverageMetricsSelector" must {
     "calculate capacity of systemLoadAverage metrics" in {
       val capacity = SystemLoadAverageMetricsSelector.capacity(nodeMetrics)
-      capacity(a1) should be(0.9375 +- 0.0001)
-      capacity(b1) should be(0.9375 +- 0.0001)
-      capacity(c1) should be(0.0 +- 0.0001)
-      capacity.contains(d1) should be(false)
+      capacity(a1) should ===(0.9375 +- 0.0001)
+      capacity(b1) should ===(0.9375 +- 0.0001)
+      capacity(c1) should ===(0.0 +- 0.0001)
+      capacity.contains(d1) should ===(false)
     }
   }
 
   "MixMetricsSelector" must {
     "aggregate capacity of all metrics" in {
       val capacity = MixMetricsSelector.capacity(nodeMetrics)
-      capacity(a1) should be((0.75 + 0.9 + 0.9375) / 3 +- 0.0001)
-      capacity(b1) should be((0.75 + 0.5 + 0.9375) / 3 +- 0.0001)
-      capacity(c1) should be((0.0 + 0.0 + 0.0) / 3 +- 0.0001)
-      capacity(d1) should be((0.001953125) / 1 +- 0.0001)
+      capacity(a1) should ===((0.75 + 0.9 + 0.9375) / 3 +- 0.0001)
+      capacity(b1) should ===((0.75 + 0.5 + 0.9375) / 3 +- 0.0001)
+      capacity(c1) should ===((0.0 + 0.0 + 0.0) / 3 +- 0.0001)
+      capacity(d1) should ===((0.001953125) / 1 +- 0.0001)
     }
   }
 

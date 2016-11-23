@@ -1,11 +1,11 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.contrib.mailbox
 
 import com.typesafe.config.ConfigFactory
 
-import akka.actor.{ Actor, ActorSystem, DeadLetter, PoisonPill, Props, Terminated, actorRef2Scala }
+import akka.actor.{ Actor, ActorSystem, DeadLetter, PoisonPill, Props, actorRef2Scala }
 import akka.testkit.{ AkkaSpec, EventFilter, ImplicitSender }
 
 object PeekMailboxSpec {
@@ -83,7 +83,7 @@ class PeekMailboxSpec extends AkkaSpec("""
         a ! "DIE" // stays in the mailbox
       }
       expectMsg("DIE")
-      expectMsgType[DeadLetter].message should be("DIE")
+      expectMsgType[DeadLetter].message should ===("DIE")
       expectTerminated(a)
     }
 
@@ -108,7 +108,7 @@ class MyActor extends Actor {
   }
 
   override def postStop() {
-    context.system.shutdown()
+    context.system.terminate()
   }
   //#business-logic-elided
 }
@@ -117,11 +117,12 @@ object MyApp extends App {
   val system = ActorSystem("MySystem", ConfigFactory.parseString("""
     peek-dispatcher {
       mailbox-type = "akka.contrib.mailbox.PeekMailboxType"
-      max-tries = 2
+      max-retries = 2
     }
     """))
 
-  val myActor = system.actorOf(Props[MyActor].withDispatcher("peek-dispatcher"),
+  val myActor = system.actorOf(
+    Props[MyActor].withDispatcher("peek-dispatcher"),
     name = "myActor")
 
   myActor ! "Hello"

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.io
 
@@ -9,6 +9,9 @@ import akka.io.{ Tcp, IO }
 import java.net.InetSocketAddress
 import akka.testkit.{ ImplicitSender, TestProbe, AkkaSpec }
 import akka.util.ByteString
+
+import scala.concurrent.Await
+import scala.concurrent.duration.Duration
 
 object PullReadingExample {
 
@@ -25,8 +28,8 @@ object PullReadingExample {
       //#pull-accepting
       case Bound(localAddress) =>
         // Accept connections one by one
-        sender ! ResumeAccepting(batchSize = 1)
-        context.become(listening(sender))
+        sender() ! ResumeAccepting(batchSize = 1)
+        context.become(listening(sender()))
         //#pull-accepting
         monitor ! localAddress
     }
@@ -34,8 +37,8 @@ object PullReadingExample {
     //#pull-accepting-cont
     def listening(listener: ActorRef): Receive = {
       case Connected(remote, local) =>
-        val handler = context.actorOf(Props(classOf[PullEcho], sender))
-        sender ! Register(handler, keepOpenOnPeerClosed = true)
+        val handler = context.actorOf(Props(classOf[PullEcho], sender()))
+        sender() ! Register(handler, keepOpenOnPeerClosed = true)
         listener ! ResumeAccepting(batchSize = 1)
     }
     //#pull-accepting-cont
@@ -77,7 +80,6 @@ class PullReadingSpec extends AkkaSpec with ImplicitSender {
     client.send(connection, ResumeReading)
     client.expectMsg(Received(ByteString("hello")))
 
-    system.shutdown()
-    system.awaitTermination
+    Await.ready(system.terminate(), Duration.Inf)
   }
 }

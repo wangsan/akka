@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.testkit
 
@@ -9,8 +9,9 @@ import akka.testkit._
 
 //#imports-test-probe
 import scala.concurrent.duration._
-import akka.actor._
 import scala.concurrent.Future
+import akka.actor._
+import akka.testkit.TestProbe
 
 //#imports-test-probe
 
@@ -210,6 +211,16 @@ class TestkitDocSpec extends AkkaSpec with DefaultTimeout with ImplicitSender {
     //#test-special-probe
   }
 
+  "demonstrate usage of test probe with custom name" in {
+    //#test-probe-with-custom-name
+    val worker = TestProbe("worker")
+    val aggregator = TestProbe("aggregator")
+
+    worker.ref.path.name should startWith("worker")
+    aggregator.ref.path.name should startWith("aggregator")
+    //#test-probe-with-custom-name
+  }
+
   "demonstrate probe watch" in {
     import akka.testkit.TestProbe
     val target = system.actorOf(Props.empty)
@@ -283,7 +294,7 @@ class TestkitDocSpec extends AkkaSpec with DefaultTimeout with ImplicitSender {
       //#put-your-test-code-here
       val probe = TestProbe()
       probe.send(testActor, "hello")
-      try expectMsg("hello") catch { case NonFatal(e) => system.shutdown(); throw e }
+      try expectMsg("hello") catch { case NonFatal(e) => system.terminate(); throw e }
       //#put-your-test-code-here
 
       shutdown(system)

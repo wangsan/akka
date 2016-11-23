@@ -139,6 +139,19 @@ If you want very detailed logging of all lifecycle changes of Actors (restarts, 
       }
     }
 
+If you want unhandled messages logged at DEBUG:
+
+.. code-block:: ruby
+
+    akka {
+      actor {
+        debug {
+          # enable DEBUG logging of unhandled messages
+          unhandled = on
+        }
+      }
+    }
+
 If you want very detailed logging of all events, transitions and timers of FSM Actors that extend LoggingFSM:
 
 .. code-block:: ruby
@@ -261,9 +274,16 @@ Loggers
 Logging is performed asynchronously through an event bus. Log events are processed by an event handler actor
 and it will receive the log events in the same order as they were emitted. 
 
+.. note::
+  The event handler actor does not have a bounded inbox and is run on the default dispatcher. This means
+  that logging extreme amounts of data may affect your application badly. It can be somewhat mitigated by
+  making sure to use an async logging backend though. (See :ref:`slf4j-directly-scala`)
+
 You can configure which event handlers are created at system start-up and listen to logging events. That is done using the 
 ``loggers`` element in the :ref:`configuration`.
-Here you can also define the log level.
+Here you can also define the log level. More fine grained filtering based on the log source 
+can be implemented in a custom ``LoggingFilter``, which can be defined in the ``logging-filter`` 
+configuration property.
 
 .. code-block:: ruby
 
@@ -284,8 +304,6 @@ Example of creating a listener:
 .. includecode:: code/docs/event/LoggingDocSpec.scala
    :include: my-event-listener
 
-.. _slf4j-scala:
-
 Logging to stdout during startup and shutdown
 =============================================
 
@@ -293,6 +311,8 @@ When the actor system is starting up and shutting down the configured ``loggers`
 Instead log messages are printed to stdout (System.out). The default log level for this
 stdout logger is ``WARNING`` and it can be silenced completely by setting 
 ``akka.stdout-loglevel=OFF``.
+
+.. _slf4j-scala:
 
 SLF4J
 =====
@@ -302,19 +322,27 @@ It has one single dependency; the slf4j-api jar. In runtime you also need a SLF4
 
   .. code-block:: scala
 
-     lazy val logback = "ch.qos.logback" % "logback-classic" % "1.0.13"
+     libraryDependencies += "ch.qos.logback" % "logback-classic" % "1.1.3"
 
 
-You need to enable the Slf4jLogger in the 'loggers' element in
+You need to enable the Slf4jLogger in the ``loggers`` element in
 the :ref:`configuration`. Here you can also define the log level of the event bus.
 More fine grained log levels can be defined in the configuration of the SLF4J backend
-(e.g. logback.xml).
+(e.g. logback.xml). You should also define ``akka.event.slf4j.Slf4jLoggingFilter`` in
+the ``logging-filter`` configuration property. It will filter the log events using the backend
+configuration (e.g. logback.xml) before they are published to the event bus.
+
+.. warning::
+  If you set the ``loglevel`` to a higher level than "DEBUG", any DEBUG events will be filtered
+  out already at the source and will never reach the logging backend, regardless of how the backend
+  is configured.
 
 .. code-block:: ruby
 
   akka {
     loggers = ["akka.event.slf4j.Slf4jLogger"]
     loglevel = "DEBUG"
+    logging-filter = "akka.event.slf4j.Slf4jLoggingFilter"
   }
 
 One gotcha is that the timestamp is attributed in the event handler, not when actually doing the logging.
@@ -336,8 +364,20 @@ the first case and ``LoggerFactory.getLogger(s: String)`` in the second).
 
   val log = Logging(system.eventStream, "my.nice.string")
 
-Logging Thread and Akka Source in MDC
--------------------------------------
+.. _slf4j-directly-scala:
+
+Using the SLF4J API directly
+----------------------------
+If you use the SLF4J API directly in your application, remember that the logging operations will block
+while the underlying infrastructure writes the log statements.
+
+This can be avoided by configuring the logging implementation to use
+a non-blocking appender. Logback provides `AsyncAppender <http://logback.qos.ch/manual/appenders.html#AsyncAppender>`_
+that does this. It also contains a feature which will drop ``INFO`` and ``DEBUG`` messages if the logging
+load is high.
+
+Logging Thread, Akka Source and Actor System in MDC
+---------------------------------------------------
 
 Since the logging is done asynchronously the thread in which the logging was performed is captured in
 Mapped Diagnostic Context (MDC) with attribute name ``sourceThread``.
@@ -366,12 +406,21 @@ information is available in the MDC with attribute name ``akkaSource``::
     </encoder>
   </appender>
 
+Finally, the actor system in which the logging was performed
+is available in the MDC with attribute name ``sourceActorSystem``::
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%date{ISO8601} %-5level %logger{36} %X{sourceActorSystem} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
 For more details on what this attribute contains—also for non-actors—please see
 `How to Log`_.
 
 
 More accurate timestamps for log output in MDC
-------------------------------------------------
+----------------------------------------------
 
 Akka's logging is asynchronous which means that the timestamp of a log entry is taken from
 when the underlying logger implementation is called, which can be surprising at first.
@@ -397,7 +446,7 @@ get it you will use the factory receiving an Actor as logSource:
     val log: DiagnosticLoggingAdapter = Logging(this);
 
 Once you have the logger, you just need to add the custom values before you log something.
-This way, the values will be put in the SLF4J MDC right before appending the log and removed after.
+This way, the values will dologbe put in the SLF4J MDC right before appending the log and removed after.
 
 .. note::
 
@@ -423,4 +472,25 @@ Now, the values will be available in the MDC, so you can use them in the layout 
       </pattern>
     </encoder>
   </appender>
+
+
+Using Markers
+-------------
+
+Some logging libraries allow, in addition to MDC data, attaching so called "markers" to log statements.
+These are used to filter out rare and special events, for example you might want to mark logs that detect
+some malicious activity and mark them with a ``SECURITY`` tag, and in your appender configuration make these
+trigger emails and other notifications immediately.
+
+Markers are available through the LoggingAdapters, when obtained via ``Logging.withMarker``.
+The first argument passed into all log calls then should be a ``akka.event.LogMarker``. 
+
+The slf4j bridge provided by akka in ``akka-slf4j`` will automatically pick up this marker value and make it available to SLF4J.
+For example you could use it like this::
+
+  <pattern>%date{ISO8601} [%marker][%level] [%msg]%n</pattern>
+  
+A more advanced (including most Akka added information) example pattern would be::
+
+  <pattern>%date{ISO8601} level=[%level] marker=[%marker] logger=[%logger] akkaSource=[%X{akkaSource}] sourceActorSystem=[%X{sourceActorSystem}] sourceThread=[%X{sourceThread}] mdc=[ticket-#%X{ticketNumber}: %X{ticketDesc}] - msg=[%msg]%n----%n</pattern>
 

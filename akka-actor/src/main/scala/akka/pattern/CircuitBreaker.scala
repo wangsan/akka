@@ -1,19 +1,25 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.pattern
 
-import java.util.concurrent.atomic.{ AtomicInteger, AtomicLong, AtomicBoolean }
+import java.util.concurrent.atomic.{ AtomicBoolean, AtomicInteger, AtomicLong }
+
 import akka.AkkaException
 import akka.actor.Scheduler
 import akka.util.Unsafe
+
 import scala.util.control.NoStackTrace
-import java.util.concurrent.{ Callable, CopyOnWriteArrayList }
-import scala.concurrent.{ ExecutionContext, Future, Promise, Await }
+import java.util.concurrent.{ Callable, CompletionStage, CopyOnWriteArrayList }
+
+import scala.concurrent.{ Await, ExecutionContext, Future, Promise }
 import scala.concurrent.duration._
+import scala.concurrent.TimeoutException
 import scala.util.control.NonFatal
 import scala.util.Success
 import akka.dispatch.ExecutionContexts.sameThreadExecutionContext
+
+import scala.compat.java8.FutureConverters
 
 /**
  * Companion object providing factory methods for Circuit Breaker which runs callbacks in caller's thread
@@ -34,7 +40,6 @@ object CircuitBreaker {
    */
   def apply(scheduler: Scheduler, maxFailures: Int, callTimeout: FiniteDuration, resetTimeout: FiniteDuration): CircuitBreaker =
     new CircuitBreaker(scheduler, maxFailures, callTimeout, resetTimeout)(sameThreadExecutionContext)
-
   /**
    * Java API: Create a new CircuitBreaker.
    *
@@ -64,17 +69,39 @@ object CircuitBreaker {
  * closed state.  If it fails, the circuit breaker will re-open to open state.  All calls beyond the first that
  * execute while the first is running will fail-fast with an exception.
  *
- *
  * @param scheduler Reference to Akka scheduler
  * @param maxFailures Maximum number of failures before opening the circuit
  * @param callTimeout [[scala.concurrent.duration.FiniteDuration]] of time after which to consider a call a failure
  * @param resetTimeout [[scala.concurrent.duration.FiniteDuration]] of time after which to attempt to close the circuit
  * @param executor [[scala.concurrent.ExecutionContext]] used for execution of state transition listeners
  */
-class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: FiniteDuration, resetTimeout: FiniteDuration)(implicit executor: ExecutionContext) extends AbstractCircuitBreaker {
+class CircuitBreaker(
+  scheduler:                Scheduler,
+  maxFailures:              Int,
+  callTimeout:              FiniteDuration,
+  resetTimeout:             FiniteDuration,
+  maxResetTimeout:          FiniteDuration,
+  exponentialBackoffFactor: Double)(implicit executor: ExecutionContext) extends AbstractCircuitBreaker {
+
+  require(exponentialBackoffFactor >= 1.0, "factor must be >= 1.0")
 
   def this(executor: ExecutionContext, scheduler: Scheduler, maxFailures: Int, callTimeout: FiniteDuration, resetTimeout: FiniteDuration) = {
-    this(scheduler, maxFailures, callTimeout, resetTimeout)(executor)
+    this(scheduler, maxFailures, callTimeout, resetTimeout, 36500.days, 1.0)(executor)
+  }
+
+  // add the old constructor to make it binary compatible
+  def this(scheduler: Scheduler, maxFailures: Int, callTimeout: FiniteDuration, resetTimeout: FiniteDuration)(implicit executor: ExecutionContext) = {
+    this(scheduler, maxFailures, callTimeout, resetTimeout, 36500.days, 1.0)(executor)
+  }
+
+  /**
+   * The `resetTimeout` will be increased exponentially for each failed attempt to close the circuit.
+   * The default exponential backoff factor is 2.
+   *
+   * @param maxResetTimeout the upper bound of resetTimeout
+   */
+  def withExponentialBackoff(maxResetTimeout: FiniteDuration): CircuitBreaker = {
+    new CircuitBreaker(scheduler, maxFailures, callTimeout, resetTimeout, maxResetTimeout, 2.0)(executor)
   }
 
   /**
@@ -82,6 +109,12 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
    */
   @volatile
   private[this] var _currentStateDoNotCallMeDirectly: State = Closed
+
+  /**
+   * Holds reference to current resetTimeout of CircuitBreaker - *access only via helper methods*
+   */
+  @volatile
+  private[this] var _currentResetTimeoutDoNotCallMeDirectly: FiniteDuration = resetTimeout
 
   /**
    * Helper method for access to underlying state via Unsafe
@@ -104,11 +137,26 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
     Unsafe.instance.getObjectVolatile(this, AbstractCircuitBreaker.stateOffset).asInstanceOf[State]
 
   /**
+   * Helper method for updating the underlying resetTimeout via Unsafe
+   */
+  @inline
+  private[this] def swapResetTimeout(oldResetTimeout: FiniteDuration, newResetTimeout: FiniteDuration): Boolean =
+    Unsafe.instance.compareAndSwapObject(this, AbstractCircuitBreaker.resetTimeoutOffset, oldResetTimeout, newResetTimeout)
+
+  /**
+   * Helper method for accessing to the underlying resetTimeout via Unsafe
+   */
+  @inline
+  private[this] def currentResetTimeout: FiniteDuration =
+    Unsafe.instance.getObjectVolatile(this, AbstractCircuitBreaker.resetTimeoutOffset).asInstanceOf[FiniteDuration]
+
+  /**
    * Wraps invocations of asynchronous calls that need to be protected
    *
    * @param body Call needing protected
-   * @tparam T return type from call
-   * @return [[scala.concurrent.Future]] containing the call result
+   * @return [[scala.concurrent.Future]] containing the call result or a
+   *   `scala.concurrent.TimeoutException` if the call timed out
+   *
    */
   def withCircuitBreaker[T](body: ⇒ Future[T]): Future[T] = currentState.invoke(body)
 
@@ -116,18 +164,33 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
    * Java API for [[#withCircuitBreaker]]
    *
    * @param body Call needing protected
-   * @tparam T return type from call
-   * @return [[scala.concurrent.Future]] containing the call result
+   * @return [[scala.concurrent.Future]] containing the call result or a
+   *   `scala.concurrent.TimeoutException` if the call timed out
    */
   def callWithCircuitBreaker[T](body: Callable[Future[T]]): Future[T] = withCircuitBreaker(body.call)
 
   /**
-   * Wraps invocations of synchronous calls that need to be protected
-   *
-   * Calls are run in caller's thread
+   * Java API (8) for [[#withCircuitBreaker]]
    *
    * @param body Call needing protected
-   * @tparam T return type from call
+   * @return [[java.util.concurrent.CompletionStage]] containing the call result or a
+   *   `scala.concurrent.TimeoutException` if the call timed out
+   */
+  def callWithCircuitBreakerCS[T](body: Callable[CompletionStage[T]]): CompletionStage[T] =
+    FutureConverters.toJava[T](callWithCircuitBreaker(new Callable[Future[T]] {
+      override def call(): Future[T] = FutureConverters.toScala(body.call())
+    }))
+
+  /**
+   * Wraps invocations of synchronous calls that need to be protected
+   *
+   * Calls are run in caller's thread. Because of the synchronous nature of
+   * this call the  `scala.concurrent.TimeoutException` will only be thrown
+   * after the body has completed.
+   *
+   * Throws java.util.concurrent.TimeoutException if the call timed out.
+   *
+   * @param body Call needing protected
    * @return The result of the call
    */
   def withSyncCircuitBreaker[T](body: ⇒ T): T =
@@ -136,14 +199,60 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
       callTimeout)
 
   /**
-   * Java API for [[#withSyncCircuitBreaker]]
+   * Java API for [[#withSyncCircuitBreaker]]. Throws [[java.util.concurrent.TimeoutException]] if the call timed out.
    *
    * @param body Call needing protected
-   * @tparam T return type from call
    * @return The result of the call
    */
-
   def callWithSyncCircuitBreaker[T](body: Callable[T]): T = withSyncCircuitBreaker(body.call)
+
+  /**
+   * Mark a successful call through CircuitBreaker. Sometimes the callee of CircuitBreaker sends back a message to the
+   * caller Actor. In such a case, it is convenient to mark a successful call instead of using Future
+   * via [[withCircuitBreaker]]
+   */
+  def succeed(): Unit = {
+    currentState.callSucceeds()
+  }
+
+  /**
+   * Mark a failed call through CircuitBreaker. Sometimes the callee of CircuitBreaker sends back a message to the
+   * caller Actor. In such a case, it is convenient to mark a failed call instead of using Future
+   * via [[withCircuitBreaker]]
+   */
+  def fail(): Unit = {
+    currentState.callFails()
+  }
+
+  /**
+   * Return true if the internal state is Closed. WARNING: It is a "power API" call which you should use with care.
+   * Ordinal use cases of CircuitBreaker expects a remote call to return Future, as in withCircuitBreaker.
+   * So, if you check the state by yourself, and make a remote call outside CircuitBreaker, you should
+   * manage the state yourself.
+   */
+  def isClosed: Boolean = {
+    currentState == Closed
+  }
+
+  /**
+   * Return true if the internal state is Open. WARNING: It is a "power API" call which you should use with care.
+   * Ordinal use cases of CircuitBreaker expects a remote call to return Future, as in withCircuitBreaker.
+   * So, if you check the state by yourself, and make a remote call outside CircuitBreaker, you should
+   * manage the state yourself.
+   */
+  def isOpen: Boolean = {
+    currentState == Open
+  }
+
+  /**
+   * Return true if the internal state is HalfOpen. WARNING: It is a "power API" call which you should use with care.
+   * Ordinal use cases of CircuitBreaker expects a remote call to return Future, as in withCircuitBreaker.
+   * So, if you check the state by yourself, and make a remote call outside CircuitBreaker, you should
+   * manage the state yourself.
+   */
+  def isHalfOpen: Boolean = {
+    currentState == HalfOpen
+  }
 
   /**
    * Adds a callback to execute when circuit breaker opens
@@ -168,7 +277,6 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
 
   /**
    * Adds a callback to execute when circuit breaker transitions to half-open
-   *
    * The callback is run in the [[scala.concurrent.ExecutionContext]] supplied in the constructor.
    *
    * @param callback Handler to be invoked on state change
@@ -216,17 +324,16 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
   private[akka] def currentFailureCount: Int = Closed.get
 
   /**
-   * Implements consistent transition between states
+   * Implements consistent transition between states. Throws IllegalStateException if an invalid transition is attempted.
    *
    * @param fromState State being transitioning from
    * @param toState State being transitioning from
-   * @throws IllegalStateException if an invalid transition is attempted
    */
-  private def transition(fromState: State, toState: State): Unit =
+  private def transition(fromState: State, toState: State): Unit = {
     if (swapState(fromState, toState))
       toState.enter()
-    else
-      throw new IllegalStateException("Illegal transition attempted from: " + fromState + " to " + toState)
+    // else some other thread already swapped state
+  }
 
   /**
    * Trips breaker to an open state.  This is valid from Closed or Half-Open states.
@@ -247,6 +354,8 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
    */
   private def attemptReset(): Unit = transition(Open, HalfOpen)
 
+  private val timeoutFuture = Future.failed(new TimeoutException("Circuit Breaker Timed out.") with NoStackTrace)
+
   /**
    * Internal state abstraction
    */
@@ -257,7 +366,6 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * Add a listener function which is invoked on state entry
      *
      * @param listener listener implementation
-     * @tparam T return type of listener, not used - but supplied for type inference purposes
      */
     def addListener(listener: Runnable): Unit = listeners add listener
 
@@ -288,24 +396,39 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * call timeout is counted as a failed call, otherwise a successful call
      *
      * @param body Implementation of the call
-     * @tparam T Return type of the call's implementation
      * @return Future containing the result of the call
      */
     def callThrough[T](body: ⇒ Future[T]): Future[T] = {
-      val deadline = callTimeout.fromNow
-      val bodyFuture = try body catch { case NonFatal(t) ⇒ Future.failed(t) }
-      bodyFuture.onComplete({
-        case s: Success[_] if !deadline.isOverdue() ⇒ callSucceeds()
-        case _                                      ⇒ callFails()
-      })(sameThreadExecutionContext)
-      bodyFuture
+
+      def materialize[U](value: ⇒ Future[U]): Future[U] = try value catch { case NonFatal(t) ⇒ Future.failed(t) }
+
+      if (callTimeout == Duration.Zero) {
+        materialize(body)
+      } else {
+        val p = Promise[T]()
+
+        implicit val ec = sameThreadExecutionContext
+        p.future.onComplete {
+          case s: Success[_] ⇒ callSucceeds()
+          case _             ⇒ callFails()
+        }
+
+        val timeout = scheduler.scheduleOnce(callTimeout) {
+          p tryCompleteWith timeoutFuture
+        }
+
+        materialize(body).onComplete { result ⇒
+          p tryComplete result
+          timeout.cancel
+        }
+        p.future
+      }
     }
 
     /**
      * Abstract entry point for all states
      *
      * @param body Implementation of the call that needs protected
-     * @tparam T Return type of protected call
      * @return Future containing result of protected call
      */
     def invoke[T](body: ⇒ Future[T]): Future[T]
@@ -348,7 +471,6 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * Implementation of invoke, which simply attempts the call
      *
      * @param body Implementation of the call that needs protected
-     * @tparam T Return type of protected call
      * @return Future containing result of protected call
      */
     override def invoke[T](body: ⇒ Future[T]): Future[T] = callThrough(body)
@@ -369,11 +491,14 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
     override def callFails(): Unit = if (incrementAndGet() == maxFailures) tripBreaker(Closed)
 
     /**
-     * On entry of this state, failure count is reset.
+     * On entry of this state, failure count and resetTimeout is reset.
      *
      * @return
      */
-    override def _enter(): Unit = set(0)
+    override def _enter(): Unit = {
+      set(0)
+      swapResetTimeout(currentResetTimeout, resetTimeout)
+    }
 
     /**
      * Override for more descriptive toString
@@ -393,7 +518,6 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * If the call succeeds the breaker closes.
      *
      * @param body Implementation of the call that needs protected
-     * @tparam T Return type of protected call
      * @return Future containing result of protected call
      */
     override def invoke[T](body: ⇒ Future[T]): Future[T] =
@@ -437,7 +561,6 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * Fail-fast on any invocation
      *
      * @param body Implementation of the call that needs protected
-     * @tparam T Return type of protected call
      * @return Future containing result of protected call
      */
     override def invoke[T](body: ⇒ Future[T]): Future[T] =
@@ -449,7 +572,8 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      * @return duration to when the breaker will attempt a reset by transitioning to half-open
      */
     private def remainingDuration(): FiniteDuration = {
-      val diff = System.nanoTime() - get
+      val fromOpened = System.nanoTime() - get
+      val diff = currentResetTimeout.toNanos - fromOpened
       if (diff <= 0L) Duration.Zero
       else diff.nanos
     }
@@ -476,9 +600,16 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
      */
     override def _enter(): Unit = {
       set(System.nanoTime())
-      scheduler.scheduleOnce(resetTimeout) {
+      scheduler.scheduleOnce(currentResetTimeout) {
         attemptReset()
       }
+      val nextResetTimeout = currentResetTimeout * exponentialBackoffFactor match {
+        case f: FiniteDuration ⇒ f
+        case _                 ⇒ currentResetTimeout
+      }
+
+      if (nextResetTimeout < maxResetTimeout)
+        swapResetTimeout(currentResetTimeout, nextResetTimeout)
     }
 
     /**
@@ -500,5 +631,5 @@ class CircuitBreaker(scheduler: Scheduler, maxFailures: Int, callTimeout: Finite
  */
 class CircuitBreakerOpenException(
   val remainingDuration: FiniteDuration,
-  message: String = "Circuit Breaker is open; calls are failing fast")
+  message:               String         = "Circuit Breaker is open; calls are failing fast")
   extends AkkaException(message) with NoStackTrace

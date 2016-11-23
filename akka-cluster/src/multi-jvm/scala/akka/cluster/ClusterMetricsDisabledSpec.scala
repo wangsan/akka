@@ -1,8 +1,10 @@
 /*
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster
+
+// TODO remove metrics 
 
 import akka.remote.testkit.{ MultiNodeSpec, MultiNodeConfig }
 import com.typesafe.config.ConfigFactory
@@ -23,11 +25,11 @@ abstract class ClusterMetricsDisabledSpec extends MultiNodeSpec(ClusterMetricsDi
   "Cluster metrics" must {
     "not collect metrics, not publish ClusterMetricsChanged, and not gossip metrics" taggedAs LongRunningTest in {
       awaitClusterUp(roles: _*)
-      clusterView.clusterMetrics.size should be(0)
+      clusterView.clusterMetrics.size should ===(0)
       cluster.subscribe(testActor, classOf[ClusterMetricsChanged])
       expectMsgType[CurrentClusterState]
       expectNoMsg
-      clusterView.clusterMetrics.size should be(0)
+      clusterView.clusterMetrics.size should ===(0)
       enterBarrier("after")
     }
   }

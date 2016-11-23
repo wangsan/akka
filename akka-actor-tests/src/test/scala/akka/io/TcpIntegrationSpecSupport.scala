@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.io
@@ -9,16 +9,16 @@ import scala.collection.immutable
 import akka.testkit.{ AkkaSpec, TestProbe }
 import akka.actor.ActorRef
 import akka.io.Inet.SocketOption
-import akka.TestUtils._
+import akka.testkit.SocketUtil._
 import Tcp._
 
 trait TcpIntegrationSpecSupport { _: AkkaSpec ⇒
 
-  class TestSetup {
+  class TestSetup(shouldBindServer: Boolean = true) {
     val bindHandler = TestProbe()
     val endpoint = temporaryServerAddress()
 
-    bindServer()
+    if (shouldBindServer) bindServer()
 
     def bindServer(): Unit = {
       val bindCommander = TestProbe()

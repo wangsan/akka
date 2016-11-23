@@ -9,8 +9,9 @@ import org.scalatest.Matchers
 import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.actor.RootActorPath
-import akka.contrib.pattern.ClusterSingletonManager
-import akka.contrib.pattern.ClusterSingletonProxy
+import akka.cluster.singleton.ClusterSingletonManager
+import akka.cluster.singleton.ClusterSingletonManagerSettings
+import akka.cluster.singleton.ClusterSingletonProxy
 import akka.cluster.Cluster
 import akka.cluster.Member
 import akka.cluster.MemberStatus
@@ -19,12 +20,29 @@ import akka.cluster.ClusterEvent.MemberUp
 import akka.remote.testkit.MultiNodeConfig
 import akka.remote.testkit.MultiNodeSpec
 import akka.testkit.ImplicitSender
+import akka.cluster.singleton.ClusterSingletonProxySettings
 
 object StatsSampleSingleMasterSpecConfig extends MultiNodeConfig {
   // register the named roles (nodes) of the test
   val first = role("first")
   val second = role("second")
   val third = role("third")
+
+  def nodeList = Seq(first, second, third)
+
+  // Extract individual sigar library for every node.
+  nodeList foreach { role =>
+    nodeConfig(role) {
+      ConfigFactory.parseString(s"""
+      # Disable legacy metrics in akka-cluster.
+      akka.cluster.metrics.enabled=off
+      # Enable metrics extension in akka-cluster-metrics.
+      akka.extensions=["akka.cluster.metrics.ClusterMetricsExtension"]
+      # Sigar native library extract location during tests.
+      akka.cluster.metrics.native-library-extract-folder=target/native/${role.name}
+      """)
+    }
+  }
 
   // this configuration will be used for all nodes
   // note that no fixed host names and ports are used
@@ -33,13 +51,10 @@ object StatsSampleSingleMasterSpecConfig extends MultiNodeConfig {
     akka.actor.provider = "akka.cluster.ClusterActorRefProvider"
     akka.remote.log-remote-lifecycle-events = off
     akka.cluster.roles = [compute]
-    # don't use sigar for tests, native lib not in path
-    akka.cluster.metrics.collector-class = akka.cluster.JmxMetricsCollector
     #//#router-deploy-config
     akka.actor.deployment {
-      /singleton/statsService/workerRouter {
+      /statsService/singleton/workerRouter {
           router = consistent-hashing-pool
-          nr-of-instances = 100
           cluster {
             enabled = on
             max-nr-of-instances-per-node = 3
@@ -86,11 +101,13 @@ abstract class StatsSampleSingleMasterSpec extends MultiNodeSpec(StatsSampleSing
       Cluster(system).unsubscribe(testActor)
 
       system.actorOf(ClusterSingletonManager.props(
-        singletonProps = Props[StatsService], singletonName = "statsService",
-        terminationMessage = PoisonPill, role = Some("compute")), name = "singleton")
+        singletonProps = Props[StatsService], terminationMessage = PoisonPill,
+        settings = ClusterSingletonManagerSettings(system).withRole("compute")),
+        name = "statsService")
 
-      system.actorOf(ClusterSingletonProxy.props(singletonPath = "/user/singleton/statsService",
-        role = Some("compute")), name = "statsServiceProxy")
+      system.actorOf(ClusterSingletonProxy.props(singletonManagerPath = "/user/statsService",
+        ClusterSingletonProxySettings(system).withRole("compute")),
+        name = "statsServiceProxy")
 
       testConductor.enter("all-up")
     }

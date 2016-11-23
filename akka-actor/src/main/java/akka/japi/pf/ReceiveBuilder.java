@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.japi.pf;
@@ -10,19 +10,20 @@ package akka.japi.pf;
  * There is both a match on type only, and a match on type and predicate.
  *
  * Inside an actor you can use it like this with Java 8 to define your receive method.
- * <p/>
+ * <p>
  * Example:
+ * </p>
  * <pre>
- * @Override
+ * &#64;Override
  * public Actor() {
  *   receive(ReceiveBuilder.
- *     match(Double.class, d -> {
+ *     match(Double.class, d -&gt; {
  *       sender().tell(d.isNaN() ? 0 : d, self());
  *     }).
- *     match(Integer.class, i -> {
+ *     match(Integer.class, i -&gt; {
  *       sender().tell(i * 10, self());
  *     }).
- *     match(String.class, s -> s.startsWith("foo"), s -> {
+ *     match(String.class, s -&gt; s.startsWith("foo"), s -&gt; {
  *       sender().tell(s.toUpperCase(), self());
  *     }).build()
  *   );
@@ -36,34 +37,44 @@ public class ReceiveBuilder {
   }
 
   /**
+   * Return a new {@link UnitPFBuilder} with no case statements. They can be added later as the returned {@link
+   * UnitPFBuilder} is a mutable object.
+   *
+   * @return a builder with no case statements
+   */
+  public static UnitPFBuilder<Object> create() {
+    return new UnitPFBuilder<>();
+  }
+
+  /**
    * Return a new {@link UnitPFBuilder} with a case statement added.
    *
-   * @param type   a type to match the argument against
-   * @param apply  an action to apply to the argument if the type matches
-   * @return       a builder with the case statement added
+   * @param type  a type to match the argument against
+   * @param apply an action to apply to the argument if the type matches
+   * @return a builder with the case statement added
    */
-  public static <P> UnitPFBuilder<Object> match(final Class<P> type, FI.UnitApply<P> apply) {
+  public static <P> UnitPFBuilder<Object> match(final Class<? extends P> type, FI.UnitApply<? extends P> apply) {
     return UnitMatch.match(type, apply);
   }
 
   /**
    * Return a new {@link UnitPFBuilder} with a case statement added.
    *
-   * @param type       a type to match the argument against
-   * @param predicate  a predicate that will be evaluated on the argument if the type matches
-   * @param apply      an action to apply to the argument if the type matches and the predicate returns true
-   * @return           a builder with the case statement added
+   * @param type      a type to match the argument against
+   * @param predicate a predicate that will be evaluated on the argument if the type matches
+   * @param apply     an action to apply to the argument if the type matches and the predicate returns true
+   * @return a builder with the case statement added
    */
-  public static <P> UnitPFBuilder<Object> match(final Class<P> type,
-                                                FI.TypedPredicate<P> predicate,
-                                                FI.UnitApply<P> apply) {
+  public static <P> UnitPFBuilder<Object> match(final Class<? extends P> type,
+                                                FI.TypedPredicate<? extends P> predicate,
+                                                FI.UnitApply<? extends P> apply) {
     return UnitMatch.match(type, predicate, apply);
   }
 
   /**
    * Return a new {@link UnitPFBuilder} with a case statement added.
    *
-   * @param object  the object to compare equals with
+   * @param object the object to compare equals with
    * @param apply  an action to apply to the argument if the object compares equal
    * @return a builder with the case statement added
    */
@@ -74,9 +85,9 @@ public class ReceiveBuilder {
   /**
    * Return a new {@link UnitPFBuilder} with a case statement added.
    *
-   * @param object  the object to compare equals with
-   * @param predicate  a predicate that will be evaluated on the argument if the object compares equal
-   * @param apply  an action to apply to the argument if the object compares equal
+   * @param object    the object to compare equals with
+   * @param predicate a predicate that will be evaluated on the argument if the object compares equal
+   * @param apply     an action to apply to the argument if the object compares equal
    * @return a builder with the case statement added
    */
   public static <P> UnitPFBuilder<Object> matchEquals(P object,
@@ -88,8 +99,8 @@ public class ReceiveBuilder {
   /**
    * Return a new {@link UnitPFBuilder} with a case statement added.
    *
-   * @param apply      an action to apply to the argument
-   * @return           a builder with the case statement added
+   * @param apply an action to apply to the argument
+   * @return a builder with the case statement added
    */
   public static UnitPFBuilder<Object> matchAny(FI.UnitApply<Object> apply) {
     return UnitMatch.matchAny(apply);

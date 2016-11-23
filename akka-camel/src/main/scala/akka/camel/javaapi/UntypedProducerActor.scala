@@ -1,18 +1,16 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.camel.javaapi
 
 import akka.actor.UntypedActor
 import akka.camel._
-import org.apache.camel.{ CamelContext, ProducerTemplate }
+import org.apache.camel.{ ProducerTemplate }
 import org.apache.camel.impl.DefaultCamelContext
 
 /**
  * Subclass this abstract class to create an untyped producer actor. This class is meant to be used from Java.
- *
- *
  */
 abstract class UntypedProducerActor extends UntypedActor with ProducerSupport {
   /**

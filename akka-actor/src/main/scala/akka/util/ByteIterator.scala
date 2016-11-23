@@ -1,17 +1,14 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.util
 
 import java.nio.{ ByteBuffer, ByteOrder }
 
-import scala.collection.{ LinearSeq, IndexedSeqOptimized }
-import scala.collection.mutable.{ Builder, WrappedArray }
-import scala.collection.immutable.{ IndexedSeq, VectorBuilder }
-import scala.collection.generic.CanBuildFrom
-import scala.collection.mutable.{ ListBuffer }
 import scala.annotation.tailrec
+import scala.collection.LinearSeq
+import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
 object ByteIterator {
@@ -203,7 +200,7 @@ object ByteIterator {
     final override def len: Int = iterators.foldLeft(0) { _ + _.len }
 
     final override def length: Int = {
-      var result = len
+      val result = len
       clear()
       result
     }
@@ -237,6 +234,7 @@ object ByteIterator {
       new MultiByteArrayIterator(clonedIterators)
     }
 
+    /** For performance sensitive code, call take() directly on ByteString (it's optimised there) */
     final override def take(n: Int): this.type = {
       var rest = n
       val builder = new ListBuffer[ByteArrayIterator]
@@ -252,7 +250,8 @@ object ByteIterator {
       normalize()
     }
 
-    @tailrec final override def drop(n: Int): this.type =
+    /** For performance sensitive code, call drop() directly on ByteString (it's optimised there) */
+    final override def drop(n: Int): this.type =
       if ((n > 0) && !isEmpty) {
         val nCurrent = math.min(n, current.len)
         current.drop(n)
@@ -344,7 +343,9 @@ object ByteIterator {
     def getDoubles(xs: Array[Double], offset: Int, n: Int)(implicit byteOrder: ByteOrder): this.type =
       getToArray(xs, offset, n, 8) { getDouble(byteOrder) } { current.getDoubles(_, _, _)(byteOrder) }
 
-    def copyToBuffer(buffer: ByteBuffer): Int = {
+    /** For performance sensitive code, call copyToBuffer() directly on ByteString (it's optimised there) */
+    override def copyToBuffer(buffer: ByteBuffer): Int = {
+      // the fold here is better than indexing into the LinearSeq
       val n = iterators.foldLeft(0) { _ + _.copyToBuffer(buffer) }
       normalize()
       n
@@ -546,15 +547,35 @@ abstract class ByteIterator extends BufferedIterator[Byte] {
 
   /**
    * Get a specific number of Bytes from this iterator. In contrast to
-   * copyToArray, this method will fail if this.len < xs.length.
+   * copyToArray, this method will fail if this.len &lt; xs.length.
    */
   def getBytes(xs: Array[Byte]): this.type = getBytes(xs, 0, xs.length)
 
   /**
    * Get a specific number of Bytes from this iterator. In contrast to
-   * copyToArray, this method will fail if length < n or if (xs.length - offset) < n.
+   * copyToArray, this method will fail if length &lt; n or if (xs.length - offset) &lt; n.
    */
   def getBytes(xs: Array[Byte], offset: Int, n: Int): this.type
+
+  /**
+   * Get a specific number of Bytes from this iterator. In contrast to
+   * copyToArray, this method will fail if this.len &lt; n.
+   */
+  def getBytes(n: Int): Array[Byte] = {
+    val bytes = new Array[Byte](n)
+    getBytes(bytes, 0, n)
+    bytes
+  }
+
+  /**
+   * Get a ByteString with specific number of Bytes from this iterator. In contrast to
+   * copyToArray, this method will fail if this.len &lt; n.
+   */
+  def getByteString(n: Int): ByteString = {
+    val bs = clone.take(n).toByteString
+    drop(n)
+    bs
+  }
 
   /**
    * Get a number of Shorts from this iterator.
@@ -618,6 +639,7 @@ abstract class ByteIterator extends BufferedIterator[Byte] {
    * @param buffer a ByteBuffer to copy bytes to
    * @return the number of bytes actually copied
    */
+  /** For performance sensitive code, call take() directly on ByteString (it's optimised there) */
   def copyToBuffer(buffer: ByteBuffer): Int
 
   /**

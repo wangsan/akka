@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster
@@ -17,27 +17,38 @@ import akka.cluster.ClusterEvent._
 import akka.testkit.AkkaSpec
 import akka.testkit.ImplicitSender
 import akka.actor.ActorRef
+import akka.remote.RARP
 import akka.testkit.TestProbe
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
-class ClusterDomainEventPublisherSpec extends AkkaSpec
+object ClusterDomainEventPublisherSpec {
+  val config = """
+    akka.actor.provider = "cluster"
+    akka.remote.netty.tcp.port = 0
+    """
+}
+
+class ClusterDomainEventPublisherSpec extends AkkaSpec(ClusterDomainEventPublisherSpec.config)
   with BeforeAndAfterEach with ImplicitSender {
 
+  val protocol =
+    if (RARP(system).provider.remoteSettings.Artery.Enabled) "akka"
+    else "akka.tcp"
+
   var publisher: ActorRef = _
-  val aUp = TestMember(Address("akka.tcp", "sys", "a", 2552), Up)
+  val aUp = TestMember(Address(protocol, "sys", "a", 2552), Up)
   val aLeaving = aUp.copy(status = Leaving)
   val aExiting = aLeaving.copy(status = Exiting)
   val aRemoved = aExiting.copy(status = Removed)
-  val bExiting = TestMember(Address("akka.tcp", "sys", "b", 2552), Exiting)
+  val bExiting = TestMember(Address(protocol, "sys", "b", 2552), Exiting)
   val bRemoved = bExiting.copy(status = Removed)
-  val cJoining = TestMember(Address("akka.tcp", "sys", "c", 2552), Joining, Set("GRP"))
+  val cJoining = TestMember(Address(protocol, "sys", "c", 2552), Joining, Set("GRP"))
   val cUp = cJoining.copy(status = Up)
   val cRemoved = cUp.copy(status = Removed)
-  val a51Up = TestMember(Address("akka.tcp", "sys", "a", 2551), Up)
-  val dUp = TestMember(Address("akka.tcp", "sys", "d", 2552), Up, Set("GRP"))
+  val a51Up = TestMember(Address(protocol, "sys", "a", 2551), Up)
+  val dUp = TestMember(Address(protocol, "sys", "d", 2552), Up, Set("GRP"))
 
   val g0 = Gossip(members = SortedSet(aUp)).seen(aUp.uniqueAddress)
-  val g1 = Gossip(members = SortedSet(aUp, bExiting, cJoining)).seen(aUp.uniqueAddress).seen(bExiting.uniqueAddress).seen(cJoining.uniqueAddress)
+  val g1 = Gossip(members = SortedSet(aUp, cJoining)).seen(aUp.uniqueAddress).seen(cJoining.uniqueAddress)
   val g2 = Gossip(members = SortedSet(aUp, bExiting, cUp)).seen(aUp.uniqueAddress)
   val g3 = g2.seen(bExiting.uniqueAddress).seen(cUp.uniqueAddress)
   val g4 = Gossip(members = SortedSet(a51Up, aUp, bExiting, cUp)).seen(aUp.uniqueAddress)
@@ -54,6 +65,7 @@ class ClusterDomainEventPublisherSpec extends AkkaSpec
     memberSubscriber = TestProbe()
     system.eventStream.subscribe(memberSubscriber.ref, classOf[MemberEvent])
     system.eventStream.subscribe(memberSubscriber.ref, classOf[LeaderChanged])
+    system.eventStream.subscribe(memberSubscriber.ref, ClusterShuttingDown.getClass)
 
     publisher = system.actorOf(Props[ClusterDomainEventPublisher])
     publisher ! PublishChanges(g0)
@@ -62,6 +74,11 @@ class ClusterDomainEventPublisherSpec extends AkkaSpec
   }
 
   "ClusterDomainEventPublisher" must {
+
+    "publish MemberJoined" in {
+      publisher ! PublishChanges(g1)
+      memberSubscriber.expectMsg(MemberJoined(cJoining))
+    }
 
     "publish MemberUp" in {
       publisher ! PublishChanges(g2)
@@ -84,7 +101,7 @@ class ClusterDomainEventPublisherSpec extends AkkaSpec
       memberSubscriber.expectMsg(MemberExited(bExiting))
       memberSubscriber.expectMsg(MemberUp(cUp))
       publisher ! PublishChanges(g6)
-      memberSubscriber.expectNoMsg(500 millis)
+      memberSubscriber.expectMsg(MemberLeft(aLeaving))
       publisher ! PublishChanges(g7)
       memberSubscriber.expectMsg(MemberExited(aExiting))
       memberSubscriber.expectMsg(LeaderChanged(Some(cUp.address)))
@@ -160,8 +177,9 @@ class ClusterDomainEventPublisherSpec extends AkkaSpec
       subscriber.expectNoMsg(500 millis)
     }
 
-    "publish Removed when stopped" in {
+    "publish ClusterShuttingDown and Removed when stopped" in {
       publisher ! PoisonPill
+      memberSubscriber.expectMsg(ClusterShuttingDown)
       memberSubscriber.expectMsg(MemberRemoved(aRemoved, Up))
     }
 

@@ -45,7 +45,7 @@ eventually become too full. It also let’s you distribute work around your clus
 scale dynamically scale and is completely non-blocking. This pattern is a 
 specialisation of the above 'Balancing Workload Pattern'."
 
-The pattern is described `Work Pulling Pattern to prevent mailbox overflow, throttle and distribute work <http://www.michaelpollmeier.com/akka-work-pulling-pattern/>`_.
+The pattern is described `Work Pulling Pattern to prevent mailbox overflow, throttle and distribute work <http://www.michaelpollmeier.com/akka-work-pulling-pattern>`_.
 
 Ordered Termination
 ===================
@@ -155,19 +155,3 @@ and schedule the initial message send again.
 
 .. includecode:: code/docs/pattern/SchedulerPatternSpec.scala#schedule-receive
 
-Template Pattern
-================
-
-*Contributed by: N. N.*
-
-This is an especially nice pattern, since it does even come with some empty example code:
-
-.. includecode:: code/docs/pattern/ScalaTemplate.scala
-   :include: all-of-it
-   :exclude: uninteresting-stuff
-
-.. note::
-
-   Spread the word: this is the easiest way to get famous!
-
-Please keep this pattern at the end of this file.

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.transport
 
@@ -9,6 +9,7 @@ import akka.util.ByteString
 import akka.remote.transport.AssociationHandle.HandleEventListener
 import akka.AkkaException
 import scala.util.control.NoStackTrace
+import akka.actor.DeadLetterSuppression
 
 object Transport {
 
@@ -23,7 +24,7 @@ object Transport {
 
   /**
    * Message sent to a [[akka.remote.transport.Transport.AssociationEventListener]] registered to a transport
-   * (via the Promise returned by [[akka.remote.transport.Transport.listen]]) when an inbound association request arrives.
+   * (via the Promise returned by [[akka.remote.transport.Transport#listen]]) when an inbound association request arrives.
    *
    * @param association
    *   The handle for the inbound association.
@@ -103,6 +104,9 @@ trait Transport {
    */
   def listen: Future[(Address, Promise[AssociationEventListener])]
 
+  // Need to do like this for binary compatibility reasons
+  // def boundAddress: Address
+
   /**
    * Asynchronously opens a logical duplex link between two Transport Entities over a network. It could be backed by a
    * real transport-layer connection (TCP), more lightweight connections provided over datagram protocols (UDP with
@@ -149,7 +153,7 @@ object AssociationHandle {
 
   /**
    * Message sent to the listener registered to an association (via the Promise returned by
-   * [[akka.remote.transport.AssociationHandle.readHandlerPromise]]) when an inbound payload arrives.
+   * [[akka.remote.transport.AssociationHandle#readHandlerPromise]]) when an inbound payload arrives.
    *
    * @param payload
    *   The raw bytes that were sent by the remote endpoint.
@@ -164,7 +168,7 @@ object AssociationHandle {
    * @param info
    *   information about the reason of disassociation
    */
-  final case class Disassociated(info: DisassociateInfo) extends HandleEvent
+  final case class Disassociated(info: DisassociateInfo) extends HandleEvent with DeadLetterSuppression
 
   /**
    * Supertype of possible disassociation reasons

@@ -1,80 +1,58 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.persistence
 
-import scala.collection.immutable
-
 import akka.actor._
 
-import akka.persistence.serialization.Message
+import scala.collection.immutable
 
 /**
  * INTERNAL API.
  *
- * Messages exchanged between processors, views, channels and a journal.
+ * Messages exchanged between persistent actors, views and a journal.
  */
 private[persistence] object JournalProtocol {
-  /**
-   * Request to delete messages identified by `messageIds`. If `permanent` is set to `false`,
-   * the persistent messages are marked as deleted, otherwise they are permanently deleted.
-   */
-  final case class DeleteMessages(messageIds: immutable.Seq[PersistentId], permanent: Boolean, requestor: Option[ActorRef] = None)
 
-  /**
-   * Reply message to a successful [[DeleteMessages]] request.
-   */
-  final case class DeleteMessagesSuccess(messageIds: immutable.Seq[PersistentId])
-
-  /**
-   * Reply message to a failed [[DeleteMessages]] request.
-   */
-  final case class DeleteMessagesFailure(cause: Throwable)
+  /** Marker trait shared by internal journal messages. */
+  sealed trait Message extends Protocol.Message
+  /** Internal journal command. */
+  sealed trait Request extends Message
+  /** Internal journal acknowledgement. */
+  sealed trait Response extends Message
 
   /**
    * Request to delete all persistent messages with sequence numbers up to `toSequenceNr`
-   * (inclusive). If `permanent` is set to `false`, the persistent messages are marked
-   * as deleted in the journal, otherwise they are permanently deleted from the journal.
+   * (inclusive).
    */
-  final case class DeleteMessagesTo(processorId: String, toSequenceNr: Long, permanent: Boolean)
-
-  /**
-   * Request to write delivery confirmations.
-   */
-  final case class WriteConfirmations(confirmations: immutable.Seq[PersistentConfirmation], requestor: ActorRef)
-
-  /**
-   * Reply message to a successful [[WriteConfirmations]] request.
-   */
-  final case class WriteConfirmationsSuccess(confirmations: immutable.Seq[PersistentConfirmation])
-
-  /**
-   * Reply message to a failed [[WriteConfirmations]] request.
-   */
-  final case class WriteConfirmationsFailure(cause: Throwable)
+  final case class DeleteMessagesTo(persistenceId: String, toSequenceNr: Long, persistentActor: ActorRef)
+    extends Request
 
   /**
    * Request to write messages.
    *
    * @param messages messages to be written.
-   * @param processor write requestor.
+   * @param persistentActor write requestor.
    */
-  final case class WriteMessages(messages: immutable.Seq[PersistentRepr], processor: ActorRef)
+  final case class WriteMessages(messages: immutable.Seq[PersistentEnvelope], persistentActor: ActorRef, actorInstanceId: Int)
+    extends Request with NoSerializationVerificationNeeded
 
   /**
    * Reply message to a successful [[WriteMessages]] request. This reply is sent to the requestor
    * before all subsequent [[WriteMessageSuccess]] replies.
    */
-  case object WriteMessagesSuccess
+  case object WriteMessagesSuccessful
+    extends Response
 
   /**
    * Reply message to a failed [[WriteMessages]] request. This reply is sent to the requestor
-   * before all subsequent [[WriteMessagFailure]] replies.
+   * before all subsequent [[WriteMessageFailure]] replies.
    *
    * @param cause failure cause.
    */
-  final case class WriteMessagesFailure(cause: Throwable)
+  final case class WriteMessagesFailed(cause: Throwable)
+    extends Response
 
   /**
    * Reply message to a successful [[WriteMessages]] request. For each contained [[PersistentRepr]] message
@@ -82,7 +60,19 @@ private[persistence] object JournalProtocol {
    *
    * @param persistent successfully written message.
    */
-  final case class WriteMessageSuccess(persistent: PersistentRepr)
+  final case class WriteMessageSuccess(persistent: PersistentRepr, actorInstanceId: Int)
+    extends Response
+
+  /**
+   * Reply message to a rejected [[WriteMessages]] request. The write of this message was rejected before
+   * it was stored, e.g. because it could not be serialized. For each contained [[PersistentRepr]] message
+   * in the request, a separate reply is sent to the requestor.
+   *
+   * @param message message rejected to be written.
+   * @param cause failure cause.
+   */
+  final case class WriteMessageRejected(message: PersistentRepr, cause: Throwable, actorInstanceId: Int)
+    extends Response with NoSerializationVerificationNeeded
 
   /**
    * Reply message to a failed [[WriteMessages]] request. For each contained [[PersistentRepr]] message
@@ -91,35 +81,28 @@ private[persistence] object JournalProtocol {
    * @param message message failed to be written.
    * @param cause failure cause.
    */
-  final case class WriteMessageFailure(message: PersistentRepr, cause: Throwable)
+  final case class WriteMessageFailure(message: PersistentRepr, cause: Throwable, actorInstanceId: Int)
+    extends Response with NoSerializationVerificationNeeded
 
   /**
-   * Request to loop a `message` back to `processor`, without persisting the message. Looping of messages
-   * through a journal is required to preserve message order with persistent messages.
-   *
-   * @param message message to be looped through the journal.
-   * @param processor loop requestor.
-   */
-  final case class LoopMessage(message: Any, processor: ActorRef)
-
-  /**
-   * Reply message to a [[LoopMessage]] request.
+   * Reply message to a [[WriteMessages]] with a non-persistent message.
    *
    * @param message looped message.
    */
-  final case class LoopMessageSuccess(message: Any)
+  final case class LoopMessageSuccess(message: Any, actorInstanceId: Int)
+    extends Response with NoSerializationVerificationNeeded
 
   /**
-   * Request to replay messages to `processor`.
+   * Request to replay messages to `persistentActor`.
    *
    * @param fromSequenceNr sequence number where replay should start (inclusive).
    * @param toSequenceNr sequence number where replay should end (inclusive).
    * @param max maximum number of messages to be replayed.
-   * @param processorId requesting processor id.
-   * @param processor requesting processor.
-   * @param replayDeleted `true` if messages marked as deleted shall be replayed.
+   * @param persistenceId requesting persistent actor id.
+   * @param persistentActor requesting persistent actor.
    */
-  final case class ReplayMessages(fromSequenceNr: Long, toSequenceNr: Long, max: Long, processorId: String, processor: ActorRef, replayDeleted: Boolean = false)
+  final case class ReplayMessages(fromSequenceNr: Long, toSequenceNr: Long, max: Long,
+                                  persistenceId: String, persistentActor: ActorRef) extends Request
 
   /**
    * Reply message to a [[ReplayMessages]] request. A separate reply is sent to the requestor for each
@@ -128,40 +111,25 @@ private[persistence] object JournalProtocol {
    * @param persistent replayed message.
    */
   final case class ReplayedMessage(persistent: PersistentRepr)
+    extends Response with DeadLetterSuppression with NoSerializationVerificationNeeded
 
   /**
    * Reply message to a successful [[ReplayMessages]] request. This reply is sent to the requestor
    * after all [[ReplayedMessage]] have been sent (if any).
+   *
+   * It includes the highest stored sequence number of a given persistent actor. Note that the
+   * replay might have been limited to a lower sequence number.
+   *
+   * @param highestSequenceNr highest stored sequence number.
    */
-  case object ReplayMessagesSuccess
+  case class RecoverySuccess(highestSequenceNr: Long)
+    extends Response with DeadLetterSuppression
 
   /**
    * Reply message to a failed [[ReplayMessages]] request. This reply is sent to the requestor
    * if a replay could not be successfully completed.
    */
   final case class ReplayMessagesFailure(cause: Throwable)
+    extends Response with DeadLetterSuppression
 
-  /**
-   * Request to read the highest stored sequence number of a given processor.
-   *
-   * @param fromSequenceNr optional hint where to start searching for the maximum sequence number.
-   * @param processorId requesting processor id.
-   * @param processor requesting processor.
-   */
-  final case class ReadHighestSequenceNr(fromSequenceNr: Long = 1L, processorId: String, processor: ActorRef)
-
-  /**
-   * Reply message to a successful [[ReadHighestSequenceNr]] request.
-   *
-   * @param highestSequenceNr read highest sequence number.
-   */
-  final case class ReadHighestSequenceNrSuccess(highestSequenceNr: Long)
-
-  /**
-   * Reply message to a failed [[ReadHighestSequenceNr]] request.
-   *
-   * @param cause failure cause.
-   */
-  final case class ReadHighestSequenceNrFailure(cause: Throwable)
 }
-

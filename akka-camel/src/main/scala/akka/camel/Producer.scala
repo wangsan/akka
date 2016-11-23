@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.camel
@@ -51,10 +51,10 @@ trait ProducerSupport extends Actor with CamelSupport {
 
   /**
    * Produces <code>msg</code> to the endpoint specified by <code>endpointUri</code>. Before the message is
-   * actually sent it is pre-processed by calling <code>receiveBeforeProduce</code>. If <code>oneway</code>
+   * actually sent it is pre-processed by calling <code>transformOutgoingMessage</code>. If <code>oneway</code>
    * is <code>true</code>, an in-only message exchange is initiated, otherwise an in-out message exchange.
    *
-   * @see Producer#produce(Any, ExchangePattern)
+   * @see Producer#produce
    */
   protected def produce: Receive = {
     case CamelProducerObjects(endpoint, processor) ⇒
@@ -119,7 +119,7 @@ trait ProducerSupport extends Actor with CamelSupport {
      * response is received asynchronously, the <code>receiveAfterProduce</code> is called
      * asynchronously. The original sender is preserved.
      *
-     * @see CamelMessage#canonicalize(Any)
+     * @see CamelMessage#canonicalize
      * @param endpoint the endpoint
      * @param processor the processor
      * @param msg message to produce

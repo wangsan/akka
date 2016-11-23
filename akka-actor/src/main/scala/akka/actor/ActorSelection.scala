@@ -1,22 +1,25 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.actor
 
-import language.implicitConversions
+import java.util.concurrent.CompletionStage
+
 import scala.annotation.tailrec
 import scala.collection.immutable
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.duration._
 import scala.util.Success
-import scala.util.Failure
 import java.util.regex.Pattern
+
 import akka.pattern.ask
 import akka.routing.MurmurHash
 import akka.util.Helpers
 import akka.util.Timeout
 import akka.dispatch.ExecutionContexts
+
+import scala.compat.java8.FutureConverters
 
 /**
  * An ActorSelection is a logical view of a section of an ActorSystem's tree of Actors,
@@ -31,14 +34,14 @@ abstract class ActorSelection extends Serializable {
   protected val path: immutable.IndexedSeq[SelectionPathElement]
 
   /**
-   * Sends the specified message to the sender, i.e. fire-and-forget
+   * Sends the specified message to this ActorSelection, i.e. fire-and-forget
    * semantics, including the sender reference if possible.
    *
    * Pass [[ActorRef#noSender]] or `null` as sender if there is nobody to reply to
    */
   def tell(msg: Any, sender: ActorRef): Unit =
     ActorSelection.deliverSelection(anchor.asInstanceOf[InternalActorRef], sender,
-      ActorSelectionMessage(msg, path))
+      ActorSelectionMessage(msg, path, wildcardFanOut = false))
 
   /**
    * Forwards the message and passes the original sender actor as the sender.
@@ -79,6 +82,19 @@ abstract class ActorSelection extends Serializable {
    */
   def resolveOne(timeout: FiniteDuration): Future[ActorRef] = resolveOne()(timeout)
 
+  /**
+   * Java API for [[#resolveOne]]
+   *
+   * Resolve the [[ActorRef]] matching this selection.
+   * The result is returned as a CompletionStage that is completed with the [[ActorRef]]
+   * if such an actor exists. It is completed with failure [[ActorNotFound]] if
+   * no such actor exists or the identification didn't complete within the
+   * supplied `timeout`.
+   *
+   */
+  def resolveOneCS(timeout: FiniteDuration): CompletionStage[ActorRef] =
+    FutureConverters.toJava[ActorRef](resolveOne(timeout))
+
   override def toString: String = {
     val builder = new java.lang.StringBuilder()
     builder.append("ActorSelection[Anchor(").append(anchor.path)
@@ -101,7 +117,7 @@ abstract class ActorSelection extends Serializable {
 
   /**
    * String representation of the actor selection suitable for storage and recreation.
-   * The output is similar to the URI fragment returned by [[akka.actor.ActorPath.toSerializationFormat]].
+   * The output is similar to the URI fragment returned by [[akka.actor.ActorPath#toSerializationFormat]].
    * @return URI fragment
    */
   def toSerializationFormat: String = {
@@ -177,11 +193,16 @@ object ActorSelection {
     if (sel.elements.isEmpty)
       anchor.tell(sel.msg, sender)
     else {
+
       val iter = sel.elements.iterator
 
       @tailrec def rec(ref: InternalActorRef): Unit = {
         ref match {
           case refWithCell: ActorRefWithCell ⇒
+
+            def emptyRef = new EmptyLocalActorRef(refWithCell.provider, anchor.path / sel.elements.map(_.toString),
+              refWithCell.underlying.system.eventStream)
+
             iter.next() match {
               case SelectParent ⇒
                 val parent = ref.getParent
@@ -192,9 +213,8 @@ object ActorSelection {
               case SelectChildName(name) ⇒
                 val child = refWithCell.getSingleChild(name)
                 if (child == Nobody) {
-                  val emptyRef = new EmptyLocalActorRef(refWithCell.provider, anchor.path / sel.elements.map(_.toString),
-                    refWithCell.underlying.system.eventStream)
-                  emptyRef.tell(sel, sender)
+                  // don't send to emptyRef after wildcard fan-out
+                  if (!sel.wildcardFanOut) emptyRef.tell(sel, sender)
                 } else if (iter.isEmpty)
                   child.tell(sel.msg, sender)
                 else
@@ -202,13 +222,24 @@ object ActorSelection {
               case p: SelectChildPattern ⇒
                 // fan-out when there is a wildcard
                 val chldr = refWithCell.children
-                if (iter.isEmpty)
-                  for (c ← chldr if p.pattern.matcher(c.path.name).matches)
-                    c.tell(sel.msg, sender)
-                else {
-                  val m = sel.copy(elements = iter.toVector)
-                  for (c ← chldr if p.pattern.matcher(c.path.name).matches)
-                    deliverSelection(c.asInstanceOf[InternalActorRef], sender, m)
+                if (iter.isEmpty) {
+                  // leaf
+                  val matchingChildren = chldr.filter(c ⇒ p.pattern.matcher(c.path.name).matches)
+                  if (matchingChildren.isEmpty && !sel.wildcardFanOut)
+                    emptyRef.tell(sel, sender)
+                  else
+                    matchingChildren.foreach(_.tell(sel.msg, sender))
+                } else {
+                  val matchingChildren = chldr.filter(c ⇒ p.pattern.matcher(c.path.name).matches)
+                  // don't send to emptyRef after wildcard fan-out 
+                  if (matchingChildren.isEmpty && !sel.wildcardFanOut)
+                    emptyRef.tell(sel, sender)
+                  else {
+                    val m = sel.copy(
+                      elements = iter.toVector,
+                      wildcardFanOut = sel.wildcardFanOut || matchingChildren.size > 1)
+                    matchingChildren.foreach(c ⇒ deliverSelection(c.asInstanceOf[InternalActorRef], sender, m))
+                  }
                 }
             }
 
@@ -238,8 +269,11 @@ trait ScalaActorSelection {
  * nested path descriptions whenever using ! on them, the idea being that the
  * message is delivered by traversing the various actor paths involved.
  */
-@SerialVersionUID(1L)
-private[akka] final case class ActorSelectionMessage(msg: Any, elements: immutable.Iterable[SelectionPathElement])
+@SerialVersionUID(2L) // it has protobuf serialization in akka-remote
+private[akka] final case class ActorSelectionMessage(
+  msg:            Any,
+  elements:       immutable.Iterable[SelectionPathElement],
+  wildcardFanOut: Boolean)
   extends AutoReceivedMessage with PossiblyHarmful {
 
   def identifyRequest: Option[Identify] = msg match {

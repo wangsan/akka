@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster
 
-import scala.util.Try
+// TODO remove metrics
+
 import akka.actor.Address
 import akka.testkit.AkkaSpec
 import akka.cluster.StandardMetrics._
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class MetricValuesSpec extends AkkaSpec(MetricsEnabledSpec.config) with MetricsCollectorFactory {
 
   val collector = createMetricsCollector

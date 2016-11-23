@@ -147,9 +147,13 @@ A custom ``application.conf`` might look like this::
     # This logger prints the log messages to stdout (System.out).
     # Options: OFF, ERROR, WARNING, INFO, DEBUG
     stdout-loglevel = "DEBUG"
+    
+    # Filter of log events that is used by the LoggingAdapter before 
+    # publishing log events to the eventStream.
+    logging-filter = "akka.event.slf4j.Slf4jLoggingFilter"
 
     actor {
-      provider = "akka.cluster.ClusterActorRefProvider"
+      provider = "cluster"
       
       default-dispatcher {
         # Throughput for default Dispatcher, set to 1 for as fair as possible
@@ -192,15 +196,15 @@ Logging of Configuration
 ------------------------
 
 If the system or config property ``akka.log-config-on-start`` is set to ``on``, then the
-complete configuration at INFO level when the actor system is started. This is useful
-when you are uncertain of what configuration is used.
+complete configuration is logged at INFO level when the actor system is started. This is
+useful when you are uncertain of what configuration is used.
 
 If in doubt, you can also easily and nicely inspect configuration objects
 before or after using them to construct an actor system:
 
 .. parsed-literal::
 
-  Welcome to Scala version @scalaVersion@ (Java HotSpot(TM) 64-Bit Server VM, Java 1.6.0_27).
+  Welcome to Scala version @scalaVersion@ (Java HotSpot(TM) 64-Bit Server VM, Java 1.8.0).
   Type in expressions to have them evaluated.
   Type :help for more information.
 
@@ -401,15 +405,26 @@ topics. An example may look like this:
 
 .. includecode:: code/docs/config/ConfigDocSpec.scala#deployment-section
 
-The deployment section for a specific actor is identified by the 
-path of the actor relative to ``/user``.
+
+.. note::
+
+    The deployment section for a specific actor is identified by the
+    path of the actor relative to ``/user``.
 
 You can use asterisks as wildcard matches for the actor path sections, so you could specify:
 ``/*/sampleActor`` and that would match all ``sampleActor`` on that level in the hierarchy.
-You can also use wildcard in the last position to match all actors at a certain level:
-``/someParent/*``. Non-wildcard matches always have higher priority to match than wildcards, so:
-``/foo/bar`` is considered **more specific** than ``/foo/*`` and only the highest priority match is used.
-Please note that it **cannot** be used to partially match section, like this: ``/foo*/bar``, ``/f*o/bar`` etc.
+In addition, please note:
+
+ - you can also use wildcards in the last position to match all actors at a certain level: ``/someParent/*``
+ - you can use double-wildcards in the last position to match all child actors and their children
+   recursively: ``/someParent/**``
+ - non-wildcard matches always have higher priority to match than wildcards, and single wildcard matches
+   have higher priority than double-wildcards, so: ``/foo/bar`` is considered **more specific** than
+   ``/foo/*``, which is considered **more specific** than ``/foo/**``. Only the highest priority match is used
+ - wildcards **cannot** be used to partially match section, like this: ``/foo*/bar``, ``/f*o/bar`` etc.
+
+.. note::
+    Double-wildcards can only be placed in the last position.
 
 Listing of the Reference Configuration
 --------------------------------------
@@ -469,7 +484,18 @@ akka-persistence
 akka-remote
 ~~~~~~~~~~~
 
-.. literalinclude:: ../../../akka-remote/src/main/resources/reference.conf
+.. includecode:: ../../../akka-remote/src/main/resources/reference.conf
+   :include: shared,classic
+   :language: none
+
+
+.. _config-akka-remote-artery:
+
+akka-remote (artery)
+~~~~~~~~~~~~~~~~~~~~
+
+.. includecode:: ../../../akka-remote/src/main/resources/reference.conf
+   :include: shared,artery
    :language: none
 
 .. _config-akka-testkit:
@@ -480,12 +506,35 @@ akka-testkit
 .. literalinclude:: ../../../akka-testkit/src/main/resources/reference.conf
    :language: none
 
-.. _config-akka-zeromq:
+.. _config-cluster-metrics:
 
-akka-zeromq
-~~~~~~~~~~~
+akka-cluster-metrics
+~~~~~~~~~~~~--------
 
-.. literalinclude:: ../../../akka-zeromq/src/main/resources/reference.conf
+.. literalinclude:: ../../../akka-cluster-metrics/src/main/resources/reference.conf
    :language: none
 
+.. _config-cluster-tools:
+
+akka-cluster-tools
+~~~~~~~~~~~~------
+
+.. literalinclude:: ../../../akka-cluster-tools/src/main/resources/reference.conf
+   :language: none
+   
+.. _config-cluster-sharding:
+
+akka-cluster-sharding
+~~~~~~~~~~~~---------
+
+.. literalinclude:: ../../../akka-cluster-sharding/src/main/resources/reference.conf
+   :language: none
+   
+.. _config-distributed-data:
+
+akka-distributed-data
+~~~~~~~~~~~~---------
+
+.. literalinclude:: ../../../akka-distributed-data/src/main/resources/reference.conf
+   :language: none
 

@@ -1,15 +1,14 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.io
 
+import java.net.InetSocketAddress
 import java.nio.channels.{ SelectionKey, SocketChannel }
 import scala.util.control.NonFatal
-import scala.collection.immutable
 import scala.concurrent.duration._
 import akka.actor.{ ReceiveTimeout, ActorRef }
-import akka.io.Inet.SocketOption
 import akka.io.TcpConnection.CloseInformation
 import akka.io.SelectionHandler._
 import akka.io.Tcp._
@@ -20,15 +19,17 @@ import akka.io.Tcp._
  *
  * INTERNAL API
  */
-private[io] class TcpOutgoingConnection(_tcp: TcpExt,
-                                        channelRegistry: ChannelRegistry,
-                                        commander: ActorRef,
-                                        connect: Connect)
+private[io] class TcpOutgoingConnection(
+  _tcp:            TcpExt,
+  channelRegistry: ChannelRegistry,
+  commander:       ActorRef,
+  connect:         Connect)
   extends TcpConnection(_tcp, SocketChannel.open().configureBlocking(false).asInstanceOf[SocketChannel], connect.pullMode) {
 
+  import context._
   import connect._
 
-  context.watch(commander) // sign death pact
+  signDeathPact(commander)
 
   options.foreach(_.beforeConnect(channel.socket))
   localAddress.foreach(channel.socket.bind)
@@ -49,15 +50,38 @@ private[io] class TcpOutgoingConnection(_tcp: TcpExt,
 
   def receive: Receive = {
     case registration: ChannelRegistration ⇒
-      log.debug("Attempting connection to [{}]", remoteAddress)
       reportConnectFailure {
-        if (channel.connect(remoteAddress))
-          completeConnect(registration, commander, options)
-        else {
-          registration.enableInterest(SelectionKey.OP_CONNECT)
-          context.become(connecting(registration, tcp.Settings.FinishConnectRetries))
+        if (remoteAddress.isUnresolved) {
+          log.debug("Resolving {} before connecting", remoteAddress.getHostName)
+          Dns.resolve(remoteAddress.getHostName)(system, self) match {
+            case None ⇒
+              context.become(resolving(registration))
+            case Some(resolved) ⇒
+              register(new InetSocketAddress(resolved.addr, remoteAddress.getPort), registration)
+          }
+        } else {
+          register(remoteAddress, registration)
         }
       }
+  }
+
+  def resolving(registration: ChannelRegistration): Receive = {
+    case resolved: Dns.Resolved ⇒
+      reportConnectFailure {
+        register(new InetSocketAddress(resolved.addr, remoteAddress.getPort), registration)
+      }
+  }
+
+  def register(address: InetSocketAddress, registration: ChannelRegistration): Unit = {
+    reportConnectFailure {
+      log.debug("Attempting connection to [{}]", address)
+      if (channel.connect(address))
+        completeConnect(registration, commander, options)
+      else {
+        registration.enableInterest(SelectionKey.OP_CONNECT)
+        context.become(connecting(registration, tcp.Settings.FinishConnectRetries))
+      }
+    }
   }
 
   def connecting(registration: ChannelRegistration, remainingFinishConnectRetries: Int): Receive = {

@@ -1,14 +1,15 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.actor
 
 import akka.AkkaException
+import akka.event.LoggingAdapter
+
 import scala.annotation.tailrec
 import scala.beans.BeanProperty
 import scala.util.control.NoStackTrace
-import akka.event.LoggingAdapter
 
 /**
  * INTERNAL API
@@ -28,7 +29,7 @@ trait PossiblyHarmful
  */
 trait NoSerializationVerificationNeeded
 
-abstract class PoisonPill extends AutoReceivedMessage with PossiblyHarmful
+abstract class PoisonPill extends AutoReceivedMessage with PossiblyHarmful with DeadLetterSuppression
 
 /**
  * A message all Actors will understand, that when processed will terminate the Actor permanently.
@@ -60,7 +61,7 @@ case object Kill extends Kill {
  * is returned in the `ActorIdentity` message as `correlationId`.
  */
 @SerialVersionUID(1L)
-final case class Identify(messageId: Any) extends AutoReceivedMessage
+final case class Identify(messageId: Any) extends AutoReceivedMessage with NotInfluenceReceiveTimeout
 
 /**
  * Reply to [[akka.actor.Identify]]. Contains
@@ -95,7 +96,8 @@ final case class ActorIdentity(correlationId: Any, ref: Option[ActorRef]) {
 @SerialVersionUID(1L)
 final case class Terminated private[akka] (@BeanProperty actor: ActorRef)(
   @BeanProperty val existenceConfirmed: Boolean,
-  @BeanProperty val addressTerminated: Boolean) extends AutoReceivedMessage with PossiblyHarmful
+  @BeanProperty val addressTerminated:  Boolean)
+  extends AutoReceivedMessage with PossiblyHarmful with DeadLetterSuppression
 
 /**
  * INTERNAL API
@@ -107,7 +109,8 @@ final case class Terminated private[akka] (@BeanProperty actor: ActorRef)(
  * and translates this event to [[akka.actor.Terminated]], which is sent itself.
  */
 @SerialVersionUID(1L)
-private[akka] final case class AddressTerminated(address: Address) extends AutoReceivedMessage with PossiblyHarmful
+private[akka] final case class AddressTerminated(address: Address)
+  extends AutoReceivedMessage with PossiblyHarmful with DeadLetterSuppression
 
 abstract class ReceiveTimeout extends PossiblyHarmful
 
@@ -122,6 +125,11 @@ case object ReceiveTimeout extends ReceiveTimeout {
    */
   def getInstance = this
 }
+
+/**
+ * Marker trait to indicate that a message should not reset the receive timeout.
+ */
+trait NotInfluenceReceiveTimeout
 
 /**
  * IllegalActorStateException is thrown when a core invariant in the Actor implementation has been violated.
@@ -144,7 +152,7 @@ final case class ActorKilledException private[akka] (message: String) extends Ak
 final case class InvalidActorNameException(message: String) extends AkkaException(message)
 
 /**
- * An ActorInitializationException is thrown when the the initialization logic for an Actor fails.
+ * An ActorInitializationException is thrown when the initialization logic for an Actor fails.
  *
  * There is an extractor which works for ActorInitializationException and its subtypes:
  *
@@ -156,10 +164,12 @@ final case class InvalidActorNameException(message: String) extends AkkaExceptio
  */
 @SerialVersionUID(1L)
 class ActorInitializationException protected (actor: ActorRef, message: String, cause: Throwable)
-  extends AkkaException(message, cause) {
+  extends AkkaException(ActorInitializationException.enrichedMessage(actor, message), cause) {
   def getActor: ActorRef = actor
 }
 object ActorInitializationException {
+  private def enrichedMessage(actor: ActorRef, message: String) =
+    if (actor == null) message else s"${actor.path}: $message"
   private[akka] def apply(actor: ActorRef, message: String, cause: Throwable = null): ActorInitializationException =
     new ActorInitializationException(actor, message, cause)
   private[akka] def apply(message: String): ActorInitializationException = new ActorInitializationException(null, message, null)
@@ -179,7 +189,8 @@ object ActorInitializationException {
  */
 @SerialVersionUID(1L)
 final case class PreRestartException private[akka] (actor: ActorRef, cause: Throwable, originalCause: Throwable, messageOption: Option[Any])
-  extends ActorInitializationException(actor,
+  extends ActorInitializationException(
+    actor,
     "exception in preRestart(" +
       (if (originalCause == null) "null" else originalCause.getClass) + ", " +
       (messageOption match { case Some(m: AnyRef) ⇒ m.getClass; case _ ⇒ "None" }) +
@@ -195,7 +206,8 @@ final case class PreRestartException private[akka] (actor: ActorRef, cause: Thro
  */
 @SerialVersionUID(1L)
 final case class PostRestartException private[akka] (actor: ActorRef, cause: Throwable, originalCause: Throwable)
-  extends ActorInitializationException(actor,
+  extends ActorInitializationException(
+    actor,
     "exception post restart (" + (if (originalCause == null) "null" else originalCause.getClass) + ")", cause)
 
 /**
@@ -339,6 +351,15 @@ object Actor {
   }
 
   /**
+   * ignoringBehavior is a Receive-expression that consumes and ignores all messages.
+   */
+  @SerialVersionUID(1L)
+  object ignoringBehavior extends Receive {
+    def isDefinedAt(x: Any): Boolean = true
+    def apply(x: Any): Unit = ()
+  }
+
+  /**
    * Default placeholder (null) used for "!" to indicate that there is no sender of the message,
    * that will be translated to the receiving system's deadLetters.
    */
@@ -398,8 +419,6 @@ object Actor {
  * the name-space clean.
  */
 trait Actor {
-
-  import Actor._
 
   // to make type Receive known in subclasses without import
   type Receive = Actor.Receive

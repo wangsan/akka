@@ -1,9 +1,10 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote
 
 import language.postfixOps
+import scala.concurrent.Await
 import scala.concurrent.duration._
 import com.typesafe.config.ConfigFactory
 import akka.actor.Actor
@@ -22,41 +23,49 @@ import akka.actor.ExtendedActorSystem
 import akka.actor.ActorSystem
 import akka.actor.RootActorPath
 
-object RemoteNodeRestartDeathWatchMultiJvmSpec extends MultiNodeConfig {
+class RemoteNodeRestartDeathWatchConfig(artery: Boolean) extends MultiNodeConfig {
   val first = role("first")
   val second = role("second")
 
   commonConfig(debugConfig(on = false).withFallback(
-    ConfigFactory.parseString("""
+    ConfigFactory.parseString(s"""
       akka.loglevel = INFO
       akka.remote.log-remote-lifecycle-events = off
       akka.remote.transport-failure-detector.heartbeat-interval = 1 s
       akka.remote.transport-failure-detector.acceptable-heartbeat-pause = 3 s
+      akka.remote.artery.enabled = $artery
     """)))
 
   testTransport(on = true)
 
+}
+
+class RemoteNodeRestartDeathWatchMultiJvmNode1 extends RemoteNodeRestartDeathWatchSpec(
+  new RemoteNodeRestartDeathWatchConfig(artery = false))
+class RemoteNodeRestartDeathWatchMultiJvmNode2 extends RemoteNodeRestartDeathWatchSpec(
+  new RemoteNodeRestartDeathWatchConfig(artery = false))
+
+// FIXME this is failing with Artery
+//class ArteryRemoteNodeRestartDeathWatchMultiJvmNode1 extends RemoteNodeRestartDeathWatchSpec(
+//  new RemoteNodeRestartDeathWatchConfig(artery = true))
+//class ArteryRemoteNodeRestartDeathWatchMultiJvmNode2 extends RemoteNodeRestartDeathWatchSpec(
+//  new RemoteNodeRestartDeathWatchConfig(artery = true))
+
+object RemoteNodeRestartDeathWatchSpec {
   class Subject extends Actor {
     def receive = {
       case "shutdown" ⇒
         sender() ! "shutdown-ack"
-        context.system.shutdown()
+        context.system.terminate()
       case msg ⇒ sender() ! msg
     }
   }
-
 }
 
-// Several different variations of the test
-
-class RemoteNodeRestartDeathWatchMultiJvmNode1 extends RemoteNodeRestartDeathWatchSpec
-class RemoteNodeRestartDeathWatchMultiJvmNode2 extends RemoteNodeRestartDeathWatchSpec
-
-abstract class RemoteNodeRestartDeathWatchSpec
-  extends MultiNodeSpec(RemoteNodeRestartDeathWatchMultiJvmSpec)
-  with STMultiNodeSpec with ImplicitSender {
-
-  import RemoteNodeRestartDeathWatchMultiJvmSpec._
+abstract class RemoteNodeRestartDeathWatchSpec(multiNodeConfig: RemoteNodeRestartDeathWatchConfig)
+  extends RemotingMultiNodeSpec(multiNodeConfig) {
+  import multiNodeConfig._
+  import RemoteNodeRestartDeathWatchSpec._
 
   override def initialParticipants = roles.size
 
@@ -100,17 +109,15 @@ abstract class RemoteNodeRestartDeathWatchSpec
 
         enterBarrier("watch-established")
 
-        system.awaitTermination(30.seconds)
+        Await.ready(system.whenTerminated, 30.seconds)
 
         val freshSystem = ActorSystem(system.name, ConfigFactory.parseString(s"""
-                    akka.remote.netty.tcp {
-                      hostname = ${addr.host.get}
-                      port = ${addr.port.get}
-                    }
-                    """).withFallback(system.settings.config))
+          akka.remote.netty.tcp.port = ${addr.port.get}
+          akka.remote.artery.canonical.port = ${addr.port.get}
+          """).withFallback(system.settings.config))
         freshSystem.actorOf(Props[Subject], "subject")
 
-        freshSystem.awaitTermination(30.seconds)
+        Await.ready(freshSystem.whenTerminated, 30.seconds)
       }
 
     }

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.actor
@@ -8,9 +8,7 @@ import language.postfixOps
 
 import akka.testkit._
 import scala.concurrent.duration._
-import akka.event.Logging
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class FSMTimingSpec extends AkkaSpec with ImplicitSender {
   import FSMTimingSpec._
   import FSM._
@@ -41,6 +39,15 @@ class FSMTimingSpec extends AkkaSpec with ImplicitSender {
         fsm ! Cancel
         expectMsg(Cancel)
         expectMsg(Transition(fsm, TestStateTimeout, Initial))
+        expectNoMsg
+      }
+    }
+
+    "cancel a StateTimeout when actor is stopped" taggedAs TimingTest in {
+      val stoppingActor = system.actorOf(Props[StoppingActor])
+      system.eventStream.subscribe(testActor, classOf[DeadLetter])
+      stoppingActor ! TestStoppingActorStateTimeout
+      within(400 millis) {
         expectNoMsg
       }
     }
@@ -122,10 +129,11 @@ class FSMTimingSpec extends AkkaSpec with ImplicitSender {
     }
 
     "notify unhandled messages" taggedAs TimingTest in {
-      filterEvents(EventFilter.warning("unhandled event Tick in state TestUnhandled", source = fsm.path.toString, occurrences = 1),
+      filterEvents(
+        EventFilter.warning("unhandled event Tick in state TestUnhandled", source = fsm.path.toString, occurrences = 1),
         EventFilter.warning("unhandled event Unhandled(test) in state TestUnhandled", source = fsm.path.toString, occurrences = 1)) {
           fsm ! TestUnhandled
-          within(1 second) {
+          within(3 second) {
             fsm ! Tick
             fsm ! SetHandler
             fsm ! Tick
@@ -164,6 +172,7 @@ object FSMTimingSpec {
   case object TestCancelTimer extends State
   case object TestCancelStateTimerInNamedTimerMessage extends State
   case object TestCancelStateTimerInNamedTimerMessage2 extends State
+  case object TestStoppingActorStateTimeout extends State
 
   case object Tick
   case object Tock
@@ -200,7 +209,7 @@ object FSMTimingSpec {
         goto(Initial)
     }
     onTransition {
-      case Initial -> TestSingleTimerResubmit ⇒ setTimer("blah", Tick, 500.millis.dilated)
+      case Initial → TestSingleTimerResubmit ⇒ setTimer("blah", Tick, 500.millis.dilated)
     }
     when(TestSingleTimerResubmit) {
       case Event(Tick, _) ⇒
@@ -263,6 +272,16 @@ object FSMTimingSpec {
       case Event(Cancel, _) ⇒
         whenUnhandled(NullFunction)
         goto(Initial)
+    }
+  }
+
+  class StoppingActor extends Actor with FSM[State, Int] {
+    startWith(Initial, 0)
+
+    when(Initial, 200 millis) {
+      case Event(TestStoppingActorStateTimeout, _) ⇒
+        context.stop(self)
+        stay
     }
   }
 

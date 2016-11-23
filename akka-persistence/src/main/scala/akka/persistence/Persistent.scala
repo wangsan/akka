@@ -1,157 +1,67 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.persistence
 
-import java.lang.{ Iterable ⇒ JIterable }
-import java.util.{ List ⇒ JList }
+import akka.actor.{ ActorRef, NoSerializationVerificationNeeded }
+import akka.persistence.serialization.Message
 
 import scala.collection.immutable
 
-import akka.actor.{ ActorContext, ActorRef }
-import akka.japi.Util.immutableSeq
-import akka.pattern.PromiseActorRef
-import akka.persistence.serialization.Message
-
 /**
- * Persistent message.
+ * INTERNAL API
+ *
+ * Marks messages which can be resequenced by the [[akka.persistence.journal.AsyncWriteJournal]].
+ *
+ * In essence it is either an [[NonPersistentRepr]] or [[AtomicWrite]].
  */
-sealed abstract class Persistent {
-  /**
-   * This persistent message's payload.
-   */
-  //#payload
+private[persistence] sealed trait PersistentEnvelope {
   def payload: Any
-  //#payload
-
-  /**
-   * This persistent message's sequence number.
-   */
-  //#sequence-nr
-  def sequenceNr: Long
-  //#sequence-nr
-
-  /**
-   * Creates a new persistent message with the specified `payload`.
-   */
-  def withPayload(payload: Any): Persistent
-}
-
-object Persistent {
-  /**
-   * Java API: creates a new persistent message. Must only be used outside processors.
-   *
-   * @param payload payload of new persistent message.
-   */
-  def create(payload: Any): Persistent =
-    create(payload, null)
-
-  /**
-   * Java API: creates a new persistent message, derived from the specified current message. The current
-   * message can be obtained inside a [[Processor]] by calling `getCurrentPersistentMessage()`.
-   *
-   * @param payload payload of new persistent message.
-   * @param currentPersistentMessage current persistent message.
-   */
-  def create(payload: Any, currentPersistentMessage: Persistent): Persistent =
-    apply(payload)(Option(currentPersistentMessage))
-
-  /**
-   * Creates a new persistent message, derived from an implicit current message.
-   * When used inside a [[Processor]], this is the optional current [[Persistent]]
-   * message of that processor.
-   *
-   * @param payload payload of the new persistent message.
-   * @param currentPersistentMessage optional current persistent message, defaults to `None`.
-   */
-  def apply(payload: Any)(implicit currentPersistentMessage: Option[Persistent] = None): Persistent =
-    currentPersistentMessage.map(_.withPayload(payload)).getOrElse(PersistentRepr(payload))
-
-  /**
-   * [[Persistent]] extractor.
-   */
-  def unapply(persistent: Persistent): Option[(Any, Long)] =
-    Some((persistent.payload, persistent.sequenceNr))
+  def sender: ActorRef
+  def size: Int
 }
 
 /**
- * Persistent message that has been delivered by a [[Channel]] or [[PersistentChannel]]. Channel
- * destinations that receive messages of this type can confirm their receipt by calling [[confirm]].
+ * INTERNAL API
+ * Message which can be resequenced by the Journal, but will not be persisted.
  */
-sealed abstract class ConfirmablePersistent extends Persistent {
-  /**
-   * Called by [[Channel]] and [[PersistentChannel]] destinations to confirm the receipt of a
-   * persistent message.
-   */
-  def confirm(): Unit
-
-  /**
-   * Number of redeliveries. Only greater than zero if message has been redelivered by a [[Channel]]
-   * or [[PersistentChannel]].
-   */
-  def redeliveries: Int
+private[persistence] final case class NonPersistentRepr(payload: Any, sender: ActorRef) extends PersistentEnvelope {
+  override def size: Int = 1
 }
 
-object ConfirmablePersistent {
-  /**
-   * [[ConfirmablePersistent]] extractor.
-   */
-  def unapply(persistent: ConfirmablePersistent): Option[(Any, Long, Int)] =
-    Some((persistent.payload, persistent.sequenceNr, persistent.redeliveries))
+object AtomicWrite {
+  def apply(event: PersistentRepr): AtomicWrite = apply(List(event))
 }
 
-/**
- * Instructs a [[Processor]] to atomically write the contained [[Persistent]] messages to the
- * journal. The processor receives the written messages individually as [[Persistent]] messages.
- * During recovery, they are also replayed individually.
- */
-final case class PersistentBatch(persistentBatch: immutable.Seq[Persistent]) extends Message {
-  /**
-   * INTERNAL API.
-   */
-  private[persistence] def persistentReprList: List[PersistentRepr] =
-    persistentBatch.toList.asInstanceOf[List[PersistentRepr]]
+final case class AtomicWrite(payload: immutable.Seq[PersistentRepr]) extends PersistentEnvelope with Message {
+  require(payload.nonEmpty, "payload of AtomicWrite must not be empty!")
+
+  // only check that all persistenceIds are equal when there's more than one in the Seq
+  if (payload match {
+    case l: List[PersistentRepr]   ⇒ l.tail.nonEmpty // avoids calling .size
+    case v: Vector[PersistentRepr] ⇒ v.size > 1
+    case _                         ⇒ true // some other collection type, let's just check
+  }) require(
+    payload.forall(_.persistenceId == payload.head.persistenceId),
+    "AtomicWrite must contain messages for the same persistenceId, " +
+      s"yet different persistenceIds found: ${payload.map(_.persistenceId).toSet}")
+
+  def persistenceId = payload.head.persistenceId
+  def lowestSequenceNr = payload.head.sequenceNr // this assumes they're gapless; they should be (it is only our code creating AWs)
+  def highestSequenceNr = payload.last.sequenceNr // TODO: could be optimised, since above require traverses already
+
+  override def sender: ActorRef = ActorRef.noSender
+  override def size: Int = payload.size
 }
-
-/**
- * Plugin API: confirmation entry written by journal plugins.
- */
-trait PersistentConfirmation {
-  def processorId: String
-  def channelId: String
-  def sequenceNr: Long
-}
-
-/**
- * Plugin API: persistent message identifier.
- */
-trait PersistentId {
-  /**
-   * Id of processor that journals a persistent message
-   */
-  def processorId: String
-
-  /**
-   * A persistent message's sequence number.
-   */
-  def sequenceNr: Long
-}
-
-/**
- * INTERNAL API.
- */
-private[persistence] final case class PersistentIdImpl(processorId: String, sequenceNr: Long) extends PersistentId
 
 /**
  * Plugin API: representation of a persistent message in the journal plugin API.
  *
- * @see [[journal.SyncWriteJournal]]
- * @see [[journal.AsyncWriteJournal]]
- * @see [[journal.AsyncRecovery]]
+ * @see [[akka.persistence.journal.AsyncWriteJournal]]
+ * @see [[akka.persistence.journal.AsyncRecovery]]
  */
-trait PersistentRepr extends Persistent with PersistentId with Message {
-  import scala.collection.JavaConverters._
+trait PersistentRepr extends Message {
 
   /**
    * This persistent message's payload.
@@ -159,42 +69,43 @@ trait PersistentRepr extends Persistent with PersistentId with Message {
   def payload: Any
 
   /**
-   * `true` if this message is marked as deleted.
+   * Returns the persistent payload's manifest if available
+   */
+  def manifest: String
+
+  /**
+   * Persistent id that journals a persistent message
+   */
+  def persistenceId: String
+
+  /**
+   * This persistent message's sequence number.
+   */
+  def sequenceNr: Long
+
+  /**
+   * Unique identifier of the writing persistent actor.
+   * Used to detect anomalies with overlapping writes from multiple
+   * persistent actors, which can result in inconsistent replays.
+   */
+  def writerUuid: String
+
+  /**
+   * Creates a new persistent message with the specified `payload`.
+   */
+  def withPayload(payload: Any): PersistentRepr
+
+  /**
+   * Creates a new persistent message with the specified `manifest`.
+   */
+  def withManifest(manifest: String): PersistentRepr
+
+  /**
+   * Not used in new records stored with Akka v2.4, but
+   * old records from v2.3 may have this as `true` if
+   * it was a non-permanent delete.
    */
   def deleted: Boolean
-
-  /**
-   * Number of redeliveries. Only greater than zero if message has been redelivered by a [[Channel]]
-   * or [[PersistentChannel]].
-   */
-  def redeliveries: Int
-
-  /**
-   * Channel ids of delivery confirmations that are available for this message. Only non-empty
-   * for replayed messages.
-   */
-  def confirms: immutable.Seq[String]
-
-  /**
-   * Java API, Plugin API: channel ids of delivery confirmations that are available for this
-   * message. Only non-empty for replayed messages.
-   */
-  def getConfirms: JList[String] = confirms.asJava
-
-  /**
-   * `true` only if this message has been delivered by a channel.
-   */
-  def confirmable: Boolean
-
-  /**
-   * Delivery confirmation message.
-   */
-  def confirmMessage: Delivered
-
-  /**
-   * Delivery confirmation message.
-   */
-  def confirmTarget: ActorRef
 
   /**
    * Sender of this message.
@@ -202,134 +113,73 @@ trait PersistentRepr extends Persistent with PersistentId with Message {
   def sender: ActorRef
 
   /**
-   * INTERNAL API.
-   */
-  private[persistence] def prepareWrite(sender: ActorRef): PersistentRepr
-
-  /**
-   * INTERNAL API.
-   */
-  private[persistence] def prepareWrite()(implicit context: ActorContext): PersistentRepr =
-    prepareWrite(if (sender.isInstanceOf[PromiseActorRef]) context.system.deadLetters else sender)
-
-  /**
    * Creates a new copy of this [[PersistentRepr]].
    */
   def update(
-    sequenceNr: Long = sequenceNr,
-    processorId: String = processorId,
-    deleted: Boolean = deleted,
-    redeliveries: Int = redeliveries,
-    confirms: immutable.Seq[String] = confirms,
-    confirmMessage: Delivered = confirmMessage,
-    confirmTarget: ActorRef = confirmTarget,
-    sender: ActorRef = sender): PersistentRepr
+    sequenceNr:    Long     = sequenceNr,
+    persistenceId: String   = persistenceId,
+    deleted:       Boolean  = deleted,
+    sender:        ActorRef = sender,
+    writerUuid:    String   = writerUuid): PersistentRepr
 }
 
 object PersistentRepr {
-  /**
-   * Plugin API: value of an undefined processor or channel id.
-   */
+  /** Plugin API: value of an undefined persistenceId or manifest. */
   val Undefined = ""
+  /** Plugin API: value of an undefined / identity event adapter. */
+  val UndefinedId = 0
 
   /**
    * Plugin API.
    */
   def apply(
-    payload: Any,
-    sequenceNr: Long = 0L,
-    processorId: String = PersistentRepr.Undefined,
-    deleted: Boolean = false,
-    redeliveries: Int = 0,
-    confirms: immutable.Seq[String] = Nil,
-    confirmable: Boolean = false,
-    confirmMessage: Delivered = null,
-    confirmTarget: ActorRef = null,
-    sender: ActorRef = null) =
-    if (confirmable) ConfirmablePersistentImpl(payload, sequenceNr, processorId, deleted, redeliveries, confirms, confirmMessage, confirmTarget, sender)
-    else PersistentImpl(payload, sequenceNr, processorId, deleted, confirms, sender)
+    payload:       Any,
+    sequenceNr:    Long     = 0L,
+    persistenceId: String   = PersistentRepr.Undefined,
+    manifest:      String   = PersistentRepr.Undefined,
+    deleted:       Boolean  = false,
+    sender:        ActorRef = null,
+    writerUuid:    String   = PersistentRepr.Undefined): PersistentRepr =
+    PersistentImpl(payload, sequenceNr, persistenceId, manifest, deleted, sender, writerUuid)
 
   /**
    * Java API, Plugin API.
    */
   def create = apply _
-}
 
-object PersistentBatch {
   /**
-   * Java API.
+   * extractor of payload and sequenceNr.
    */
-  def create(persistentBatch: JIterable[Persistent]) =
-    PersistentBatch(immutableSeq(persistentBatch))
+  def unapply(persistent: PersistentRepr): Option[(Any, Long)] =
+    Some((persistent.payload, persistent.sequenceNr))
 }
 
 /**
  * INTERNAL API.
  */
 private[persistence] final case class PersistentImpl(
-  payload: Any,
-  sequenceNr: Long,
-  processorId: String,
-  deleted: Boolean,
-  confirms: immutable.Seq[String],
-  sender: ActorRef) extends Persistent with PersistentRepr {
+  override val payload:       Any,
+  override val sequenceNr:    Long,
+  override val persistenceId: String,
+  override val manifest:      String,
+  override val deleted:       Boolean,
+  override val sender:        ActorRef,
+  override val writerUuid:    String) extends PersistentRepr with NoSerializationVerificationNeeded {
 
-  def withPayload(payload: Any): Persistent =
+  def withPayload(payload: Any): PersistentRepr =
     copy(payload = payload)
 
-  def prepareWrite(sender: ActorRef) =
-    copy(sender = sender)
+  def withManifest(manifest: String): PersistentRepr =
+    if (this.manifest == manifest) this
+    else copy(manifest = manifest)
 
-  def update(
-    sequenceNr: Long,
-    processorId: String,
-    deleted: Boolean,
-    redeliveries: Int,
-    confirms: immutable.Seq[String],
-    confirmMessage: Delivered,
-    confirmTarget: ActorRef,
-    sender: ActorRef) =
-    copy(sequenceNr = sequenceNr, processorId = processorId, deleted = deleted, confirms = confirms, sender = sender)
+  def update(sequenceNr: Long, persistenceId: String, deleted: Boolean, sender: ActorRef, writerUuid: String) =
+    copy(
+      sequenceNr = sequenceNr,
+      persistenceId = persistenceId,
+      deleted = deleted,
+      sender = sender,
+      writerUuid = writerUuid)
 
-  val redeliveries: Int = 0
-  val confirmable: Boolean = false
-  val confirmMessage: Delivered = null
-  val confirmTarget: ActorRef = null
 }
 
-/**
- * INTERNAL API.
- */
-private[persistence] final case class ConfirmablePersistentImpl(
-  payload: Any,
-  sequenceNr: Long,
-  processorId: String,
-  deleted: Boolean,
-  redeliveries: Int,
-  confirms: immutable.Seq[String],
-  confirmMessage: Delivered,
-  confirmTarget: ActorRef,
-  sender: ActorRef) extends ConfirmablePersistent with PersistentRepr {
-
-  def withPayload(payload: Any): ConfirmablePersistent =
-    copy(payload = payload)
-
-  def confirm(): Unit =
-    if (confirmTarget != null) confirmTarget ! confirmMessage
-
-  def confirmable = true
-
-  def prepareWrite(sender: ActorRef) =
-    copy(sender = sender, confirmMessage = null, confirmTarget = null)
-
-  def update(sequenceNr: Long, processorId: String, deleted: Boolean, redeliveries: Int, confirms: immutable.Seq[String], confirmMessage: Delivered, confirmTarget: ActorRef, sender: ActorRef) =
-    copy(sequenceNr = sequenceNr, processorId = processorId, deleted = deleted, redeliveries = redeliveries, confirms = confirms, confirmMessage = confirmMessage, confirmTarget = confirmTarget, sender = sender)
-}
-
-/**
- * INTERNAL API.
- */
-private[persistence] object ConfirmablePersistentImpl {
-  def apply(persistent: PersistentRepr, confirmMessage: Delivered, confirmTarget: ActorRef = null): ConfirmablePersistentImpl =
-    ConfirmablePersistentImpl(persistent.payload, persistent.sequenceNr, persistent.processorId, persistent.deleted, persistent.redeliveries, persistent.confirms, confirmMessage, confirmTarget, persistent.sender)
-}

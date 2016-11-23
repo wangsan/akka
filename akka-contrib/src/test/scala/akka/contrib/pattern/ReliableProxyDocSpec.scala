@@ -1,13 +1,13 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.contrib.pattern
 
 import akka.testkit.AkkaSpec
 import akka.actor._
-import akka.testkit.ImplicitSender
 import scala.concurrent.duration._
+import akka.testkit.TestProbe
 
 object ReliableProxyDocSpec {
 
@@ -41,26 +41,50 @@ object ReliableProxyDocSpec {
     }
   }
   //#demo-transition
+
+  class WatchingProxyParent(targetPath: ActorPath) extends Actor {
+    val proxy = context.watch(context.actorOf(
+      ReliableProxy.props(targetPath, 100.millis, reconnectAfter = 500.millis, maxReconnects = 3)))
+
+    var client: Option[ActorRef] = None
+
+    def receive = {
+      case "hello" ⇒
+        proxy ! "world!"
+        client = Some(sender())
+      case Terminated(`proxy`) ⇒
+        client foreach { _ ! "terminated" }
+    }
+  }
 }
 
-class ReliableProxyDocSpec extends AkkaSpec with ImplicitSender {
+class ReliableProxyDocSpec extends AkkaSpec {
 
   import ReliableProxyDocSpec._
 
   "A ReliableProxy" must {
 
     "show usage" in {
-      val target = testActor
-      val a = system.actorOf(Props(classOf[ProxyParent], target.path))
-      a ! "hello"
-      expectMsg("world!")
+      val probe = TestProbe()
+      val a = system.actorOf(Props(classOf[ProxyParent], probe.ref.path))
+      a.tell("hello", probe.ref)
+      probe.expectMsg("world!")
     }
 
     "show state transitions" in {
-      val target = system.deadLetters
+      val target = TestProbe().ref
+      val probe = TestProbe()
       val a = system.actorOf(Props(classOf[ProxyTransitionParent], target.path))
-      a ! "go"
-      expectMsg("done")
+      a.tell("go", probe.ref)
+      probe.expectMsg("done")
+    }
+
+    "show terminated after maxReconnects" in within(5.seconds) {
+      val target = system.deadLetters
+      val probe = TestProbe()
+      val a = system.actorOf(Props(classOf[WatchingProxyParent], target.path))
+      a.tell("hello", probe.ref)
+      probe.expectMsg("terminated")
     }
 
   }

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.actor;
 
@@ -16,11 +16,11 @@ import akka.actor.OneForOneStrategy;
 import akka.actor.Props;
 import akka.actor.Terminated;
 import akka.actor.UntypedActor;
+import docs.AbstractJavaTest;
 import scala.collection.immutable.Seq;
 import scala.concurrent.Await;
 import static akka.pattern.Patterns.ask;
 import scala.concurrent.duration.Duration;
-import akka.testkit.AkkaSpec;
 import akka.testkit.TestProbe;
 
 //#testkit
@@ -38,7 +38,7 @@ import org.junit.BeforeClass;
 import org.junit.AfterClass;
 
 //#testkit
-public class FaultHandlingTest {
+public class FaultHandlingTest extends AbstractJavaTest {
   //#testkit
   static
   //#supervisor
@@ -151,7 +151,7 @@ public class FaultHandlingTest {
 
   @BeforeClass
   public static void start() {
-    system = ActorSystem.create("test", AkkaSpec.testConf());
+    system = ActorSystem.create("FaultHandlingTest");
   }
 
   @AfterClass

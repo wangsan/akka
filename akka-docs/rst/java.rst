@@ -13,8 +13,10 @@ Java Documentation
    java/index-futures
    java/index-network
    java/index-utilities
+   java/stream/index
+   java/http/index
    java/howto
-   experimental/index
+   experimental/index-java
    dev/index
    project/index
    additional/index

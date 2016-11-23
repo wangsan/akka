@@ -8,7 +8,7 @@ FSM
 Overview
 ========
 
-The FSM (Finite State Machine) is available as a mixin for the akka Actor and
+The FSM (Finite State Machine) is available as a mixin for the Akka Actor and
 is best described in the `Erlang design principles
 <http://www.erlang.org/documentation/doc-4.8.2/doc/design_principles/fsm.html>`_
 
@@ -102,6 +102,13 @@ you of the direction of the state change which is being matched. During the
 state change, the old state data is available via ``stateData`` as shown, and
 the new state data would be available as ``nextStateData``.
 
+.. note::
+  Same-state transitions can be implemented (when currently in state ``S``) using
+  ``goto(S)`` or ``stay()``. The difference between those being that ``goto(S)`` will
+  emit an event ``S->S`` event that can be handled by ``onTransition``,
+  whereas ``stay()`` will *not*.
+
+
 To verify that this buncher actually works, it is quite easy to write a test
 using the :ref:`akka-testkit`, which is conveniently bundled with ScalaTest traits
 into ``AkkaSpec``:
@@ -116,9 +123,8 @@ Reference
 The FSM Trait and Object
 ------------------------
 
-The :class:`FSM` trait may only be mixed into an :class:`Actor`. Instead of
-extending :class:`Actor`, the self type approach was chosen in order to make it
-obvious that an actor is actually created:
+The :class:`FSM` trait inherits directly from :class:`Actor`, when you
+extend :class:`FSM` you must be aware that an actor is actually created:
 
 .. includecode:: code/docs/actor/FSMDocSpec.scala
    :include: simple-fsm
@@ -200,7 +206,7 @@ Each FSM needs a starting point, which is declared using
 
 The optionally given timeout argument overrides any specification given for the
 desired initial state. If you want to cancel a default timeout, use
-:obj:`Duration.Inf`.
+:obj:`None`.
 
 Unhandled Events
 ----------------
@@ -327,8 +333,16 @@ External actors may be registered to be notified of state transitions by
 sending a message :class:`SubscribeTransitionCallBack(actorRef)`. The named
 actor will be sent a :class:`CurrentState(self, stateName)` message immediately
 and will receive :class:`Transition(actorRef, oldState, newState)` messages
-whenever a new state is reached. External monitors may be unregistered by
-sending :class:`UnsubscribeTransitionCallBack(actorRef)` to the FSM actor.
+whenever a state change is triggered.
+
+Please note that a state change includes the action of performing an ``goto(S)``, while
+already being state ``S``. In that case the monitoring actor will be notified with an
+``Transition(ref,S,S)`` message. This may be useful if your ``FSM`` should
+react on all (also same-state) transitions. In case you'd rather not emit events for same-state
+transitions use ``stay()`` instead of ``goto(S)``.
+
+External monitors may be unregistered by sending
+:class:`UnsubscribeTransitionCallBack(actorRef)` to the ``FSM`` actor.
 
 Stopping a listener without unregistering will not remove the listener from the
 subscription list; use :class:`UnsubscribeTransitionCallback` before stopping
@@ -480,5 +494,5 @@ Examples
 ========
 
 A bigger FSM example contrasted with Actor's :meth:`become`/:meth:`unbecome` can be found in
-the `Typesafe Activator <http://www.typesafe.com/platform/getstarted>`_ template named 
-`Akka FSM in Scala <http://www.typesafe.com/activator/template/akka-sample-fsm-scala>`_
+the `Lightbend Activator <http://www.lightbend.com/platform/getstarted>`_ template named
+`Akka FSM in Scala <http://www.lightbend.com/activator/template/akka-sample-fsm-scala>`_

@@ -1,17 +1,19 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.io
 
-import java.nio.channels.{ SocketChannel, SelectionKey, ServerSocketChannel }
+import java.nio.channels.{ SelectionKey, ServerSocketChannel, SocketChannel }
 import java.net.InetSocketAddress
+
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
 import akka.actor._
 import akka.io.SelectionHandler._
 import akka.io.Tcp._
-import akka.dispatch.{ UnboundedMessageQueueSemantics, RequiresMessageQueue }
+import akka.dispatch.{ RequiresMessageQueue, UnboundedMessageQueueSemantics }
+import akka.util.Helpers
 
 /**
  * INTERNAL API
@@ -29,11 +31,12 @@ private[io] object TcpListener {
 /**
  * INTERNAL API
  */
-private[io] class TcpListener(selectorRouter: ActorRef,
-                              tcp: TcpExt,
-                              channelRegistry: ChannelRegistry,
-                              bindCommander: ActorRef,
-                              bind: Bind)
+private[io] class TcpListener(
+  selectorRouter:  ActorRef,
+  tcp:             TcpExt,
+  channelRegistry: ChannelRegistry,
+  bindCommander:   ActorRef,
+  bind:            Bind)
   extends Actor with ActorLogging with RequiresMessageQueue[UnboundedMessageQueueSemantics] {
 
   import TcpListener._
@@ -57,11 +60,15 @@ private[io] class TcpListener(selectorRouter: ActorRef,
       }
       channelRegistry.register(channel, if (bind.pullMode) 0 else SelectionKey.OP_ACCEPT)
       log.debug("Successfully bound to {}", ret)
+      bind.options.foreach {
+        case o: Inet.SocketOptionV2 ⇒ o.afterBind(channel.socket)
+        case _                      ⇒
+      }
       ret
     } catch {
       case NonFatal(e) ⇒
         bindCommander ! bind.failureMessage
-        log.debug("Bind failed for TCP channel on endpoint [{}]: {}", bind.localAddress, e)
+        log.error(e, "Bind failed for TCP channel on endpoint [{}]", bind.localAddress)
         context.stop(self)
     }
 
@@ -92,6 +99,8 @@ private[io] class TcpListener(selectorRouter: ActorRef,
     case Unbind ⇒
       log.debug("Unbinding endpoint {}", localAddress)
       channel.close()
+      // see https://github.com/akka/akka/issues/20282
+      if (Helpers.isWindows) registration.enableInterest(1)
       sender() ! Unbound
       log.debug("Unbound endpoint {}, stopping listener", localAddress)
       context.stop(self)

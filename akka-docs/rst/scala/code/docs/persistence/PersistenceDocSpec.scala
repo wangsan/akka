@@ -1,16 +1,24 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.persistence
 
+import akka.actor._
+import akka.pattern.{ Backoff, BackoffSupervisor }
+import akka.persistence._
+import akka.stream.ActorMaterializer
+import akka.stream.scaladsl.{ Source, Sink, Flow }
+
 import scala.concurrent.duration._
 import scala.language.postfixOps
 
-import akka.actor.{ Actor, ActorSystem }
-import akka.persistence._
+object PersistenceDocSpec {
 
-trait PersistenceDocSpec {
+  trait SomeOtherMessage
+
+  val persistentActor: ActorRef = ???
+
   val config =
     """
       //#auto-update-interval
@@ -21,331 +29,415 @@ trait PersistenceDocSpec {
       //#auto-update
     """
 
-  val system: ActorSystem
-
-  import system._
-
-  new AnyRef {
-    //#definition
-    import akka.persistence.{ Persistent, PersistenceFailure, Processor }
-
-    class MyProcessor extends Processor {
-      def receive = {
-        case Persistent(payload, sequenceNr) =>
-        // message successfully written to journal
-        case PersistenceFailure(payload, sequenceNr, cause) =>
-        // message failed to be written to journal
-        case other =>
-        // message not written to journal
-      }
-    }
-    //#definition
-
-    //#usage
-    import akka.actor.Props
-
-    val processor = actorOf(Props[MyProcessor], name = "myProcessor")
-
-    processor ! Persistent("foo") // will be journaled
-    processor ! "bar" // will not be journaled
-    //#usage
-
-    //#recover-explicit
-    processor ! Recover()
-    //#recover-explicit
-  }
-
-  new AnyRef {
-    trait MyProcessor1 extends Processor {
-      //#recover-on-start-disabled
-      override def preStart() = ()
-      //#recover-on-start-disabled
-      //#recover-on-restart-disabled
-      override def preRestart(reason: Throwable, message: Option[Any]) = ()
-      //#recover-on-restart-disabled
+  object RecoverySample {
+    trait MyPersistentActor1 extends PersistentActor {
+      //#recovery-disabled
+      override def recovery = Recovery.none
+      //#recovery-disabled
     }
 
-    trait MyProcessor2 extends Processor {
-      //#recover-on-start-custom
-      override def preStart() {
-        self ! Recover(toSequenceNr = 457L)
-      }
-      //#recover-on-start-custom
+    trait MyPersistentActor2 extends PersistentActor {
+      //#recovery-custom
+      override def recovery = Recovery(toSequenceNr = 457L)
+      //#recovery-custom
     }
 
-    trait MyProcessor3 extends Processor {
-      //#deletion
-      override def preRestart(reason: Throwable, message: Option[Any]) {
-        message match {
-          case Some(p: Persistent) => deleteMessage(p.sequenceNr)
-          case _                   =>
-        }
-        super.preRestart(reason, message)
-      }
-      //#deletion
-    }
+    class MyPersistentActor4 extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
 
-    class MyProcessor4 extends Processor {
       //#recovery-completed
-      override def preStart(): Unit = {
-        super.preStart()
-        self ! "FIRST"
-      }
 
-      def receive = initializing.orElse(active)
-
-      def initializing: Receive = {
-        case "FIRST" =>
-          recoveryCompleted()
-          context.become(active)
-          unstashAll()
-        case other if recoveryFinished =>
-          stash()
-      }
-
-      def recoveryCompleted(): Unit = {
+      override def receiveRecover: Receive = {
+        case RecoveryCompleted =>
         // perform init after recovery, before any other messages
-        // ...
+        //...
+        case evt               => //...
       }
 
-      def active: Receive = {
-        case Persistent(msg, _) => //...
+      override def receiveCommand: Receive = {
+        case msg => //...
       }
       //#recovery-completed
     }
+
+    trait MyPersistentActor5 extends PersistentActor {
+      //#recovery-no-snap
+      override def recovery = 
+        Recovery(fromSnapshot = SnapshotSelectionCriteria.None)
+      //#recovery-no-snap
+    }
   }
 
-  new AnyRef {
-    trait ProcessorMethods {
-      //#processor-id
-      def processorId: String
-      //#processor-id
+  object PersistenceId {
+    trait PersistentActorMethods {
+      //#persistence-id
+      def persistenceId: String
+      //#persistence-id
       //#recovery-status
       def recoveryRunning: Boolean
       def recoveryFinished: Boolean
       //#recovery-status
-      //#current-message
-      implicit def currentPersistentMessage: Option[Persistent]
-      //#current-message
     }
-    class MyProcessor1 extends Processor with ProcessorMethods {
-      //#processor-id-override
-      override def processorId = "my-stable-processor-id"
-      //#processor-id-override
-      def receive = {
+    class MyPersistentActor1 extends PersistentActor with PersistentActorMethods {
+      //#persistence-id-override
+      override def persistenceId = "my-stable-persistence-id"
+      //#persistence-id-override
+
+      override def receiveRecover: Receive = {
+        case _ =>
+      }
+      override def receiveCommand: Receive = {
         case _ =>
       }
     }
   }
 
-  new AnyRef {
-    //#channel-example
-    import akka.actor.{ Actor, Props }
-    import akka.persistence.{ Channel, Deliver, Persistent, Processor }
+  object BackoffOnStop {
+    abstract class MyActor extends Actor {
+      import PersistAsync.MyPersistentActor
+      //#backoff
+      val childProps = Props[MyPersistentActor]
+      val props = BackoffSupervisor.props(
+        Backoff.onStop(
+          childProps,
+          childName = "myActor",
+          minBackoff = 3.seconds,
+          maxBackoff = 30.seconds,
+          randomFactor = 0.2))
+      context.actorOf(props, name = "mySupervisor")
+      //#backoff
+    }
 
-    class MyProcessor extends Processor {
-      val destination = context.actorOf(Props[MyDestination])
-      val channel = context.actorOf(Channel.props(), name = "myChannel")
+  }
 
-      def receive = {
-        case p @ Persistent(payload, _) =>
-          channel ! Deliver(p.withPayload(s"processed ${payload}"), destination.path)
+  object AtLeastOnce {
+    //#at-least-once-example
+    import akka.actor.{ Actor, ActorSelection }
+    import akka.persistence.AtLeastOnceDelivery
+
+    case class Msg(deliveryId: Long, s: String)
+    case class Confirm(deliveryId: Long)
+
+    sealed trait Evt
+    case class MsgSent(s: String) extends Evt
+    case class MsgConfirmed(deliveryId: Long) extends Evt
+
+    class MyPersistentActor(destination: ActorSelection)
+      extends PersistentActor with AtLeastOnceDelivery {
+
+      override def persistenceId: String = "persistence-id"
+
+      override def receiveCommand: Receive = {
+        case s: String           => persist(MsgSent(s))(updateState)
+        case Confirm(deliveryId) => persist(MsgConfirmed(deliveryId))(updateState)
+      }
+
+      override def receiveRecover: Receive = {
+        case evt: Evt => updateState(evt)
+      }
+
+      def updateState(evt: Evt): Unit = evt match {
+        case MsgSent(s) =>
+          deliver(destination)(deliveryId => Msg(deliveryId, s))
+
+        case MsgConfirmed(deliveryId) => confirmDelivery(deliveryId)
       }
     }
 
     class MyDestination extends Actor {
       def receive = {
-        case p @ ConfirmablePersistent(payload, sequenceNr, redeliveries) =>
+        case Msg(deliveryId, s) =>
           // ...
-          p.confirm()
+          sender() ! Confirm(deliveryId)
       }
     }
-    //#channel-example
-
-    class MyProcessor2 extends Processor {
-      val destination = context.actorOf(Props[MyDestination])
-      val channel =
-        //#channel-id-override
-        context.actorOf(Channel.props("my-stable-channel-id"))
-      //#channel-id-override
-
-      //#channel-custom-settings
-      context.actorOf(Channel.props(
-        ChannelSettings(redeliverInterval = 30 seconds, redeliverMax = 15)),
-        name = "myChannel")
-      //#channel-custom-settings
-
-      def receive = {
-        case p @ Persistent(payload, _) =>
-          //#channel-example-reply
-          channel ! Deliver(p.withPayload(s"processed ${payload}"), sender.path)
-        //#channel-example-reply
-      }
-
-      //#channel-custom-listener
-      class MyListener extends Actor {
-        def receive = {
-          case RedeliverFailure(messages) => // ...
-        }
-      }
-
-      val myListener = context.actorOf(Props[MyListener])
-      val myChannel = context.actorOf(Channel.props(
-        ChannelSettings(redeliverFailureListener = Some(myListener))))
-      //#channel-custom-listener
-    }
-
-    class MyProcessor3 extends Processor {
-      def receive = {
-        //#payload-pattern-matching
-        case Persistent(payload, _) =>
-        //#payload-pattern-matching
-      }
-    }
-
-    class MyProcessor4 extends Processor {
-      def receive = {
-        //#sequence-nr-pattern-matching
-        case Persistent(_, sequenceNr) =>
-        //#sequence-nr-pattern-matching
-      }
-    }
+    //#at-least-once-example
   }
 
-  new AnyRef {
-    //#fsm-example
-    import akka.actor.FSM
-    import akka.persistence.{ Processor, Persistent }
+  object SaveSnapshot {
 
-    class PersistentDoor extends Processor with FSM[String, Int] {
-      startWith("closed", 0)
+    class MyPersistentActor extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
 
-      when("closed") {
-        case Event(Persistent("open", _), counter) =>
-          goto("open") using (counter + 1) replying (counter)
-      }
-
-      when("open") {
-        case Event(Persistent("close", _), counter) =>
-          goto("closed") using (counter + 1) replying (counter)
-      }
-    }
-    //#fsm-example
-  }
-
-  new AnyRef {
-    //#save-snapshot
-    class MyProcessor extends Processor {
+      //#save-snapshot
       var state: Any = _
 
-      def receive = {
+      override def receiveCommand: Receive = {
         case "snap"                                => saveSnapshot(state)
         case SaveSnapshotSuccess(metadata)         => // ...
         case SaveSnapshotFailure(metadata, reason) => // ...
       }
+      //#save-snapshot
+
+      override def receiveRecover: Receive = ???
     }
-    //#save-snapshot
   }
 
-  new AnyRef {
-    //#snapshot-offer
-    class MyProcessor extends Processor {
+  object OfferSnapshot {
+    class MyPersistentActor extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
+
+      //#snapshot-criteria
+      override def recovery = Recovery(fromSnapshot = SnapshotSelectionCriteria(
+        maxSequenceNr = 457L,
+        maxTimestamp = System.currentTimeMillis))
+      //#snapshot-criteria
+
+      //#snapshot-offer
       var state: Any = _
 
-      def receive = {
+      override def receiveRecover: Receive = {
         case SnapshotOffer(metadata, offeredSnapshot) => state = offeredSnapshot
-        case Persistent(payload, sequenceNr)          => // ...
+        case RecoveryCompleted                        =>
+        case event                                    => // ...
       }
-    }
-    //#snapshot-offer
+      //#snapshot-offer
 
-    import akka.actor.Props
-
-    val processor = system.actorOf(Props[MyProcessor])
-
-    //#snapshot-criteria
-    processor ! Recover(fromSnapshot = SnapshotSelectionCriteria(
-      maxSequenceNr = 457L,
-      maxTimestamp = System.currentTimeMillis))
-    //#snapshot-criteria
-  }
-
-  new AnyRef {
-    import akka.actor.Props
-    //#batch-write
-    class MyProcessor extends Processor {
-      def receive = {
-        case Persistent("a", _) => // ...
-        case Persistent("b", _) => // ...
-      }
+      override def receiveCommand: Receive = ???
     }
 
-    val system = ActorSystem("example")
-    val processor = system.actorOf(Props[MyProcessor])
-
-    processor ! PersistentBatch(List(Persistent("a"), Persistent("b")))
-    //#batch-write
-    system.shutdown()
   }
 
-  new AnyRef {
-    import akka.actor._
-    trait MyActor extends Actor {
-      val destination: ActorRef = null
-      //#persistent-channel-example
-      val channel = context.actorOf(PersistentChannel.props(
-        PersistentChannelSettings(redeliverInterval = 30 seconds, redeliverMax = 15)),
-        name = "myPersistentChannel")
+  object PersistAsync {
 
-      channel ! Deliver(Persistent("example"), destination.path)
-      //#persistent-channel-example
-      //#persistent-channel-watermarks
-      PersistentChannelSettings(
-        pendingConfirmationsMax = 10000,
-        pendingConfirmationsMin = 2000)
-      //#persistent-channel-watermarks
-      //#persistent-channel-reply
-      PersistentChannelSettings(replyPersistent = true)
-      //#persistent-channel-reply
-    }
-  }
+    //#persist-async
+    class MyPersistentActor extends PersistentActor {
 
-  new AnyRef {
-    import akka.actor.ActorRef
+      override def persistenceId = "my-stable-persistence-id"
 
-    //#reliable-event-delivery
-    class MyEventsourcedProcessor(destination: ActorRef) extends EventsourcedProcessor {
-      val channel = context.actorOf(Channel.props("channel"))
-
-      def handleEvent(event: String) = {
-        // update state
-        // ...
-        // reliably deliver events
-        channel ! Deliver(Persistent(event), destination.path)
+      override def receiveRecover: Receive = {
+        case _ => // handle recovery here
       }
 
-      def receiveRecover: Receive = {
-        case event: String => handleEvent(event)
-      }
-
-      def receiveCommand: Receive = {
-        case "cmd" => {
-          // ...
-          persist("evt")(handleEvent)
+      override def receiveCommand: Receive = {
+        case c: String => {
+          sender() ! c
+          persistAsync(s"evt-$c-1") { e => sender() ! e }
+          persistAsync(s"evt-$c-2") { e => sender() ! e }
         }
       }
     }
-    //#reliable-event-delivery
+
+    // usage
+    persistentActor ! "a"
+    persistentActor ! "b"
+
+    // possible order of received messages:
+    // a
+    // b
+    // evt-a-1
+    // evt-a-2
+    // evt-b-1
+    // evt-b-2
+
+    //#persist-async
   }
-  new AnyRef {
+
+  object Defer {
+
+    //#defer
+    class MyPersistentActor extends PersistentActor {
+
+      override def persistenceId = "my-stable-persistence-id"
+
+      override def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+
+      override def receiveCommand: Receive = {
+        case c: String => {
+          sender() ! c
+          persistAsync(s"evt-$c-1") { e => sender() ! e }
+          persistAsync(s"evt-$c-2") { e => sender() ! e }
+          deferAsync(s"evt-$c-3") { e => sender() ! e }
+        }
+      }
+    }
+    //#defer
+
+    //#defer-caller
+    persistentActor ! "a"
+    persistentActor ! "b"
+
+    // order of received messages:
+    // a
+    // b
+    // evt-a-1
+    // evt-a-2
+    // evt-a-3
+    // evt-b-1
+    // evt-b-2
+    // evt-b-3
+
+    //#defer-caller
+  }
+
+  object NestedPersists {
+
+    class MyPersistentActor extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
+
+      override def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+
+      //#nested-persist-persist
+      override def receiveCommand: Receive = {
+        case c: String =>
+          sender() ! c
+
+          persist(s"$c-1-outer") { outer1 =>
+            sender() ! outer1
+            persist(s"$c-1-inner") { inner1 =>
+              sender() ! inner1
+            }
+          }
+
+          persist(s"$c-2-outer") { outer2 =>
+            sender() ! outer2
+            persist(s"$c-2-inner") { inner2 =>
+              sender() ! inner2
+            }
+          }
+      }
+      //#nested-persist-persist
+    }
+
+    //#nested-persist-persist-caller
+    persistentActor ! "a"
+    persistentActor ! "b"
+
+    // order of received messages:
+    // a
+    // a-outer-1
+    // a-outer-2
+    // a-inner-1
+    // a-inner-2
+    // and only then process "b"
+    // b
+    // b-outer-1
+    // b-outer-2
+    // b-inner-1
+    // b-inner-2
+
+    //#nested-persist-persist-caller
+
+    class MyPersistAsyncActor extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
+
+      override def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+
+      //#nested-persistAsync-persistAsync
+      override def receiveCommand: Receive = {
+        case c: String =>
+          sender() ! c
+          persistAsync(c + "-outer-1") { outer =>
+            sender() ! outer
+            persistAsync(c + "-inner-1") { inner => sender() ! inner }
+          }
+          persistAsync(c + "-outer-2") { outer =>
+            sender() ! outer
+            persistAsync(c + "-inner-2") { inner => sender() ! inner }
+          }
+      }
+      //#nested-persistAsync-persistAsync
+    }
+
+    //#nested-persistAsync-persistAsync-caller
+    persistentActor ! "a"
+    persistentActor ! "b"
+
+    // order of received messages:
+    // a
+    // b
+    // a-outer-1
+    // a-outer-2
+    // b-outer-1
+    // b-outer-2
+    // a-inner-1
+    // a-inner-2
+    // b-inner-1
+    // b-inner-2
+
+    // which can be seen as the following causal relationship:
+    // a -> a-outer-1 -> a-outer-2 -> a-inner-1 -> a-inner-2
+    // b -> b-outer-1 -> b-outer-2 -> b-inner-1 -> b-inner-2
+
+    //#nested-persistAsync-persistAsync-caller
+  }
+
+  object AvoidPoisonPill {
+
+    //#safe-shutdown
+    /** Explicit shutdown message */
+    case object Shutdown
+
+    class SafePersistentActor extends PersistentActor {
+      override def persistenceId = "safe-actor"
+
+      override def receiveCommand: Receive = {
+        case c: String =>
+          println(c)
+          persist(s"handle-$c") { println(_) }
+        case Shutdown =>
+          context.stop(self)
+      }
+
+      override def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+    }
+    //#safe-shutdown
+
+    //#safe-shutdown-example-bad
+    // UN-SAFE, due to PersistentActor's command stashing:
+    persistentActor ! "a"
+    persistentActor ! "b"
+    persistentActor ! PoisonPill
+    // order of received messages:
+    // a
+    //   # b arrives at mailbox, stashing;        internal-stash = [b]
+    // PoisonPill is an AutoReceivedMessage, is handled automatically
+    // !! stop !!
+    // Actor is stopped without handling `b` nor the `a` handler!
+    //#safe-shutdown-example-bad
+
+    //#safe-shutdown-example-good
+    // SAFE:
+    persistentActor ! "a"
+    persistentActor ! "b"
+    persistentActor ! Shutdown
+    // order of received messages:
+    // a
+    //   # b arrives at mailbox, stashing;        internal-stash = [b]
+    //   # Shutdown arrives at mailbox, stashing; internal-stash = [b, Shutdown]
+    // handle-a
+    //   # unstashing;                            internal-stash = [Shutdown]
+    // b
+    // handle-b
+    //   # unstashing;                            internal-stash = []
+    // Shutdown
+    // -- stop --
+    //#safe-shutdown-example-good
+  }
+
+  object View {
     import akka.actor.Props
 
-    //#view
-    class MyView extends View {
-      def processorId: String = "some-processor-id"
+    val system: ActorSystem = ???
 
-      def receive: Actor.Receive = {
-        case Persistent(payload, sequenceNr) => // ...
+    //#view
+    class MyView extends PersistentView {
+      override def persistenceId: String = "some-persistence-id"
+      override def viewId: String = "some-persistence-id-view"
+
+      def receive: Receive = {
+        case payload if isPersistent =>
+        // handle message from journal...
+        case payload                 =>
+        // handle message from user-land...
       }
     }
     //#view
@@ -355,4 +447,5 @@ trait PersistenceDocSpec {
     view ! Update(await = true)
     //#view-update
   }
+
 }

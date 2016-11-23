@@ -83,4 +83,24 @@ the biggest difference is the absence of remote address information in
   in the case of connection-based UDP the security check is cached after
   connect, thus writes do not suffer an additional performance penalty.
 
+UDP Multicast
+------------------------------------------
 
+If you want to use UDP multicast you will need to use Java 7. Akka provides
+a way to control various options of ``DatagramChannel`` through the
+``akka.io.Inet.SocketOption`` interface. The example below shows
+how to setup a receiver of multicast messages using IPv6 protocol.
+
+To select a Protocol Family you must extend ``akka.io.Inet.DatagramChannelCreator``
+class which extends ``akka.io.Inet.SocketOption``. Provide custom logic
+for opening a datagram channel by overriding :meth:`create` method.
+
+.. includecode:: code/docs/io/ScalaUdpMulticast.scala#inet6-protocol-family
+
+Another socket option will be needed to join a multicast group.
+
+.. includecode:: code/docs/io/ScalaUdpMulticast.scala#multicast-group
+
+Socket options must be provided to :class:`UdpMessage.Bind` message.
+
+.. includecode:: code/docs/io/ScalaUdpMulticast.scala#bind

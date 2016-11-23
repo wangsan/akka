@@ -2,9 +2,6 @@ package akka.actor.dispatch
 
 import java.util.concurrent.{ TimeUnit, CountDownLatch }
 
-import org.junit.runner.RunWith
-import org.scalatest.junit.JUnitRunner
-
 import akka.actor.{ Props, ActorRefWithCell, ActorCell, Actor }
 import akka.dispatch.Mailbox
 import akka.testkit.AkkaSpec
@@ -18,7 +15,6 @@ object BalancingDispatcherSpec {
     """
 }
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class BalancingDispatcherSpec extends AkkaSpec(BalancingDispatcherSpec.config) {
 
   val delayableActorDispatcher = "pooled-dispatcher"
@@ -80,8 +76,8 @@ class BalancingDispatcherSpec extends AkkaSpec(BalancingDispatcherSpec.config) {
       }
 
       finishedCounter.await(5, TimeUnit.SECONDS)
-      fast.underlying.asInstanceOf[ActorCell].mailbox.asInstanceOf[Mailbox].hasMessages should be(false)
-      slow.underlying.asInstanceOf[ActorCell].mailbox.asInstanceOf[Mailbox].hasMessages should be(false)
+      fast.underlying.asInstanceOf[ActorCell].mailbox.asInstanceOf[Mailbox].hasMessages should ===(false)
+      slow.underlying.asInstanceOf[ActorCell].mailbox.asInstanceOf[Mailbox].hasMessages should ===(false)
       fast.underlying.asInstanceOf[ActorCell].actor.asInstanceOf[DelayableActor].invocationCount should be > sentToFast
       fast.underlying.asInstanceOf[ActorCell].actor.asInstanceOf[DelayableActor].invocationCount should be >
         (slow.underlying.asInstanceOf[ActorCell].actor.asInstanceOf[DelayableActor].invocationCount)

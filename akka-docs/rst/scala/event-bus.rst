@@ -115,7 +115,7 @@ type :class:`ActorRef`.
 
 This classification requires an :class:`ActorSystem` in order to perform book-keeping
 operations related to the subscribers being Actors, which can terminate without first
-unsubscribing from the EventBus. ActorClassification maitains a system Actor which
+unsubscribing from the EventBus. ManagedActorClassification maintains a system Actor which
 takes care of unsubscribing terminated actors automatically.
 
 The necessary methods to be implemented are illustrated with the following example:
@@ -143,11 +143,17 @@ how a simple subscription works:
 
 .. includecode:: code/docs/event/LoggingDocSpec.scala#deadletters
 
-Similarily to `Actor Classification`_, :class:`EventStream` will automatically remove subscibers when they terminate.
+It is also worth pointing out that thanks to the way the subchannel classification
+is implemented in the event stream, it is possible to subscribe to a group of events, by
+subscribing to their common superclass as demonstrated in the following example:
+
+.. includecode:: code/docs/event/LoggingDocSpec.scala#superclass-subscription-eventstream
+
+Similarly to `Actor Classification`_, :class:`EventStream` will automatically remove subscribers when they terminate.
 
 .. note::
    The event stream is a *local facility*, meaning that it will *not* distribute events to other nodes in a clustered environment (unless you subscribe a Remote Actor to the stream explicitly).
-   If you need to broadcast events in an Akka cluster, *without* knowing your recipients explicitly (i.e. obtaining their ActorRefs), you may want to look into: :ref:`distributed-pub-sub`.
+   If you need to broadcast events in an Akka cluster, *without* knowing your recipients explicitly (i.e. obtaining their ActorRefs), you may want to look into: :ref:`distributed-pub-sub-scala`.
 
 Default Handlers
 ----------------
@@ -181,6 +187,19 @@ terminates or sent after its death are re-routed to the dead letter mailbox,
 which by default will publish the messages wrapped in :class:`DeadLetter`. This
 wrapper holds the original sender, receiver and message of the envelope which
 was redirected.
+
+Some internal messages (marked with the :class:`DeadLetterSuppression` trait) will not end up as
+dead letters like normal messages. These are by design safe and expected to sometimes arrive at a terminated actor
+and since they are nothing to worry about, they are suppressed from the default dead letters logging mechanism.
+
+However, in case you find yourself in need of debugging these kinds of low level suppressed dead letters,
+it's still possible to subscribe to them explicitly:
+
+.. includecode:: code/docs/event/LoggingDocSpec.scala#suppressed-deadletters
+
+or all dead letters (including the suppressed ones):
+
+.. includecode:: code/docs/event/LoggingDocSpec.scala#all-deadletters
 
 Other Uses
 ----------

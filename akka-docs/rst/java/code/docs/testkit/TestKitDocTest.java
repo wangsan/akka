@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.testkit;
 
@@ -283,6 +283,19 @@ public class TestKitDocTest {
       assertEquals(getRef(), probe.getLastSender());
     }};
     //#test-probe
+  }
+
+  @Test
+  public void demonstrateTestProbeWithCustomName() {
+    //#test-probe-with-custom-name
+    new JavaTestKit(system) {{
+      final TestProbe worker = new TestProbe(system, "worker");
+      final TestProbe aggregator = new TestProbe(system, "aggregator");
+
+      assertTrue(worker.ref().path().name().startsWith("worker"));
+      assertTrue(aggregator.ref().path().name().startsWith("aggregator"));
+    }};
+    //#test-probe-with-custom-name
   }
 
   @Test

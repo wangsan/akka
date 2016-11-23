@@ -1,27 +1,29 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.io
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey._
+
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
-import akka.actor.{ ActorLogging, Actor, ActorRef }
+import akka.actor.{ Actor, ActorLogging, ActorRef }
 import akka.dispatch.{ RequiresMessageQueue, UnboundedMessageQueueSemantics }
-import akka.util.ByteString
+import akka.util.{ ByteString, Helpers }
+import akka.io.Inet.DatagramChannelCreator
 import akka.io.SelectionHandler._
 import akka.io.Udp._
 
 /**
  * INTERNAL API
  */
-private[io] class UdpListener(val udp: UdpExt,
-                              channelRegistry: ChannelRegistry,
-                              bindCommander: ActorRef,
-                              bind: Bind)
+private[io] class UdpListener(
+  val udp:         UdpExt,
+  channelRegistry: ChannelRegistry,
+  bindCommander:   ActorRef,
+  bind:            Bind)
   extends Actor with ActorLogging with WithUdpSend with RequiresMessageQueue[UnboundedMessageQueueSemantics] {
 
   import udp.bufferPool
@@ -31,7 +33,9 @@ private[io] class UdpListener(val udp: UdpExt,
 
   context.watch(bind.handler) // sign death pact
 
-  val channel = DatagramChannel.open
+  val channel = bind.options.collectFirst {
+    case creator: DatagramChannelCreator ⇒ creator
+  }.getOrElse(DatagramChannelCreator()).create()
   channel.configureBlocking(false)
 
   val localAddress =
@@ -45,11 +49,15 @@ private[io] class UdpListener(val udp: UdpExt,
       }
       channelRegistry.register(channel, OP_READ)
       log.debug("Successfully bound to [{}]", ret)
+      bind.options.foreach {
+        case o: Inet.SocketOptionV2 ⇒ o.afterBind(channel.socket)
+        case _                      ⇒
+      }
       ret
     } catch {
       case NonFatal(e) ⇒
         bindCommander ! CommandFailed(bind)
-        log.debug("Failed to bind UDP channel to endpoint [{}]: {}", bind.localAddress, e)
+        log.error(e, "Failed to bind UDP channel to endpoint [{}]", bind.localAddress)
         context.stop(self)
     }
 
@@ -68,6 +76,7 @@ private[io] class UdpListener(val udp: UdpExt,
       log.debug("Unbinding endpoint [{}]", bind.localAddress)
       try {
         channel.close()
+        if (Helpers.isWindows) registration.enableInterest(OP_READ)
         sender() ! Unbound
         log.debug("Unbound endpoint [{}], stopping listener", bind.localAddress)
       } finally context.stop(self)

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.io
 
@@ -14,17 +14,17 @@ import akka.actor._
 /**
  * INTERNAL API
  */
-private[io] class UdpSender(val udp: UdpExt,
-                            channelRegistry: ChannelRegistry,
-                            commander: ActorRef,
-                            options: immutable.Traversable[SocketOption])
+private[io] class UdpSender(
+  val udp:         UdpExt,
+  channelRegistry: ChannelRegistry,
+  commander:       ActorRef,
+  options:         immutable.Traversable[SocketOption])
   extends Actor with ActorLogging with WithUdpSend with RequiresMessageQueue[UnboundedMessageQueueSemantics] {
 
   val channel = {
     val datagramChannel = DatagramChannel.open
     datagramChannel.configureBlocking(false)
     val socket = datagramChannel.socket
-
     options foreach { _.beforeDatagramBind(socket) }
 
     datagramChannel
@@ -33,6 +33,10 @@ private[io] class UdpSender(val udp: UdpExt,
 
   def receive: Receive = {
     case registration: ChannelRegistration ⇒
+      options.foreach {
+        case v2: Inet.SocketOptionV2 ⇒ v2.afterConnect(channel.socket)
+        case _                       ⇒
+      }
       commander ! SimpleSenderReady
       context.become(sendHandlers(registration))
   }

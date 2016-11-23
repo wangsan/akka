@@ -1,9 +1,7 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.testconductor
-
-import language.postfixOps
 
 import java.util.concurrent.TimeoutException
 import akka.actor._
@@ -15,7 +13,7 @@ import scala.util.control.NoStackTrace
 import scala.reflect.classTag
 import akka.util.Timeout
 import org.jboss.netty.channel.{ Channel, SimpleChannelUpstreamHandler, ChannelHandlerContext, ChannelStateEvent, MessageEvent, WriteCompletionEvent, ExceptionEvent }
-import akka.pattern.{ ask, pipe, AskTimeoutException }
+import akka.pattern.{ ask, AskTimeoutException }
 import akka.event.{ LoggingAdapter, Logging }
 import java.net.{ InetSocketAddress, ConnectException }
 import akka.remote.transport.ThrottlerTransportAdapter.{ SetThrottle, TokenBucket, Blackhole, Unthrottled }
@@ -31,9 +29,11 @@ trait Player { this: TestConductorExt ⇒
 
   private var _client: ActorRef = _
   private def client = _client match {
-    case null                     ⇒ throw new IllegalStateException("TestConductor client not yet started")
-    case _ if system.isTerminated ⇒ throw new IllegalStateException("TestConductor unavailable because system is shutdown; you need to startNewSystem() before this point")
-    case x                        ⇒ x
+    case null ⇒
+      throw new IllegalStateException("TestConductor client not yet started")
+    case _ if system.whenTerminated.isCompleted ⇒
+      throw new IllegalStateException("TestConductor unavailable because system is terminated; you need to startNewSystem() before this point")
+    case x ⇒ x
   }
 
   /**
@@ -149,7 +149,7 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
   val settings = TestConductor().Settings
 
   val handler = new PlayerHandler(controllerAddr, settings.ClientReconnects, settings.ReconnectBackoff,
-    settings.ClientSocketWorkerPoolSize, self, Logging(context.system, "PlayerHandler"),
+    settings.ClientSocketWorkerPoolSize, self, Logging(context.system, classOf[PlayerHandler].getName),
     context.system.scheduler)(context.dispatcher)
 
   startWith(Connecting, Data(None, None))
@@ -160,10 +160,11 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
     case Event(Connected(channel), _) ⇒
       channel.write(Hello(name.name, TestConductor().address))
       goto(AwaitDone) using Data(Some(channel), None)
-    case Event(_: ConnectionFailure, _) ⇒
+    case Event(e: ConnectionFailure, _) ⇒
+      log.error(e, "ConnectionFailure")
       goto(Failed)
     case Event(StateTimeout, _) ⇒
-      log.error("connect timeout to TestConductor")
+      log.error("Failed to connect to test conductor within {} ms.", settings.ConnectTimeout.toMillis)
       goto(Failed)
   }
 
@@ -191,10 +192,11 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
     case Event(ToServer(msg), d @ Data(Some(channel), None)) ⇒
       channel.write(msg)
       val token = msg match {
-        case EnterBarrier(barrier, timeout) ⇒ barrier
-        case GetAddress(node)               ⇒ node.name
+        case EnterBarrier(barrier, timeout) ⇒ Some(barrier → sender())
+        case GetAddress(node)               ⇒ Some(node.name → sender())
+        case _                              ⇒ None
       }
-      stay using d.copy(runningOp = Some(token -> sender()))
+      stay using d.copy(runningOp = token)
     case Event(ToServer(op), Data(channel, Some((token, _)))) ⇒
       log.error("cannot write {} while waiting for {}", op, token)
       stay
@@ -219,7 +221,6 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
           }
           stay using d.copy(runningOp = None)
         case t: ThrottleMsg ⇒
-          import settings.QueryTimeout
           import context.dispatcher // FIXME is this the right EC for the future below?
           val mode = if (t.rateMBit < 0.0f) Unthrottled
           else if (t.rateMBit == 0.0f) Blackhole
@@ -236,12 +237,10 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
           }
           stay
         case d: DisconnectMsg ⇒
-          import settings.QueryTimeout
-          import context.dispatcher // FIXME is this the right EC for the future below?
           // FIXME: Currently ignoring, needs support from Remoting
           stay
         case TerminateMsg(Left(false)) ⇒
-          context.system.shutdown()
+          context.system.terminate()
           stay
         case TerminateMsg(Left(true)) ⇒
           context.system.asInstanceOf[ActorSystemImpl].abort()
@@ -275,13 +274,13 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
  * INTERNAL API.
  */
 private[akka] class PlayerHandler(
-  server: InetSocketAddress,
+  server:                 InetSocketAddress,
   private var reconnects: Int,
-  backoff: FiniteDuration,
-  poolSize: Int,
-  fsm: ActorRef,
-  log: LoggingAdapter,
-  scheduler: Scheduler)(implicit executor: ExecutionContext)
+  backoff:                FiniteDuration,
+  poolSize:               Int,
+  fsm:                    ActorRef,
+  log:                    LoggingAdapter,
+  scheduler:              Scheduler)(implicit executor: ExecutionContext)
   extends SimpleChannelUpstreamHandler {
 
   import ClientFSM._

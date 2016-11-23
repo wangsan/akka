@@ -1,17 +1,17 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.testkit
 
 import language.postfixOps
-import scala.annotation.{ varargs, tailrec }
+import scala.annotation.{ tailrec }
 import scala.collection.immutable
+import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import java.util.concurrent._
 import java.util.concurrent.atomic.AtomicInteger
 import akka.actor._
-import akka.actor.Actor._
 import akka.util.{ Timeout, BoxedType }
 import scala.util.control.NonFatal
 import scala.Some
@@ -41,6 +41,12 @@ object TestActor {
   final case class Watch(ref: ActorRef) extends NoSerializationVerificationNeeded
   final case class UnWatch(ref: ActorRef) extends NoSerializationVerificationNeeded
   final case class SetAutoPilot(ap: AutoPilot) extends NoSerializationVerificationNeeded
+  final case class Spawn(props: Props, name: Option[String] = None, strategy: Option[SupervisorStrategy] = None) extends NoSerializationVerificationNeeded {
+    def apply(context: ActorRefFactory): ActorRef = name match {
+      case Some(n) ⇒ context.actorOf(props, n)
+      case None    ⇒ context.actorOf(props)
+    }
+  }
 
   trait Message {
     def msg: AnyRef
@@ -54,12 +60,39 @@ object TestActor {
 
   val FALSE = (x: Any) ⇒ false
 
+  /** INTERNAL API */
+  private[TestActor] class DelegatingSupervisorStrategy extends SupervisorStrategy {
+    import SupervisorStrategy._
+
+    private var delegates = Map.empty[ActorRef, SupervisorStrategy]
+
+    private def delegate(child: ActorRef) = delegates.get(child).getOrElse(stoppingStrategy)
+
+    def update(child: ActorRef, supervisor: SupervisorStrategy): Unit = delegates += (child → supervisor)
+
+    override def decider = defaultDecider // not actually invoked
+
+    override def handleChildTerminated(context: ActorContext, child: ActorRef, children: Iterable[ActorRef]): Unit = {
+      delegates -= child
+    }
+
+    override def processFailure(context: ActorContext, restart: Boolean, child: ActorRef, cause: Throwable, stats: ChildRestartStats, children: Iterable[ChildRestartStats]): Unit = {
+      delegate(child).processFailure(context, restart, child, cause, stats, children)
+    }
+
+    override def handleFailure(context: ActorContext, child: ActorRef, cause: Throwable, stats: ChildRestartStats, children: Iterable[ChildRestartStats]): Boolean = {
+      delegate(child).handleFailure(context, child, cause, stats, children)
+    }
+  }
+
   // make creator serializable, for VerifySerializabilitySpec
   def props(queue: BlockingDeque[Message]): Props = Props(classOf[TestActor], queue)
 }
 
 class TestActor(queue: BlockingDeque[TestActor.Message]) extends Actor {
   import TestActor._
+
+  override val supervisorStrategy: DelegatingSupervisorStrategy = new DelegatingSupervisorStrategy
 
   var ignore: Ignore = None
 
@@ -70,6 +103,10 @@ class TestActor(queue: BlockingDeque[TestActor.Message]) extends Actor {
     case Watch(ref)          ⇒ context.watch(ref)
     case UnWatch(ref)        ⇒ context.unwatch(ref)
     case SetAutoPilot(pilot) ⇒ autopilot = pilot
+    case spawn: Spawn ⇒
+      val actor = spawn(context)
+      for (s ← spawn.strategy) supervisorStrategy(actor) = s
+      queue.offerLast(RealMessage(actor, self))
     case x: AnyRef ⇒
       autopilot = autopilot.run(sender(), x) match {
         case KeepRunning ⇒ autopilot
@@ -89,9 +126,6 @@ class TestActor(queue: BlockingDeque[TestActor.Message]) extends Actor {
  * Implementation trait behind the [[akka.testkit.TestKit]] class: you may use
  * this if inheriting from a concrete class is not possible.
  *
- * <b>Use of the trait is discouraged because of potential issues with binary
- * backwards compatibility in the future, use at own risk.</b>
- *
  * This trait requires the concrete class mixing it in to provide an
  * [[akka.actor.ActorSystem]] which is available before this traits’s
  * constructor is run. The recommended way is this:
@@ -105,7 +139,7 @@ class TestActor(queue: BlockingDeque[TestActor.Message]) extends Actor {
  */
 trait TestKitBase {
 
-  import TestActor.{ Message, RealMessage, NullMessage }
+  import TestActor.{ Message, RealMessage, NullMessage, Spawn }
 
   implicit val system: ActorSystem
   val testKitSettings = TestKitExtension(system)
@@ -116,18 +150,24 @@ trait TestKitBase {
   def lastSender = lastMessage.sender
 
   /**
+   * Defines the testActor name.
+   */
+  protected def testActorName: String = "testActor"
+
+  /**
    * ActorRef of the test actor. Access is provided to enable e.g.
    * registration as message target.
    */
   val testActor: ActorRef = {
     val impl = system.asInstanceOf[ExtendedActorSystem]
-    val ref = impl.systemActorOf(TestActor.props(queue)
-      .withDispatcher(CallingThreadDispatcher.Id),
-      "testActor" + TestKit.testActorId.incrementAndGet)
+    val ref = impl.systemActorOf(
+      TestActor.props(queue)
+        .withDispatcher(CallingThreadDispatcher.Id),
+      "%s-%d".format(testActorName, TestKit.testActorId.incrementAndGet))
     awaitCond(ref match {
       case r: RepointableRef ⇒ r.isStarted
       case _                 ⇒ true
-    }, 1 second, 10 millis)
+    }, 3.seconds.dilated, 10.millis)
     ref
   }
 
@@ -253,7 +293,7 @@ trait TestKitBase {
    * Note that the timeout is scaled using Duration.dilated,
    * which uses the configuration entry "akka.test.timefactor".
    */
-  def awaitAssert(a: ⇒ Any, max: Duration = Duration.Undefined, interval: Duration = 800.millis) {
+  def awaitAssert(a: ⇒ Any, max: Duration = Duration.Undefined, interval: Duration = 100.millis) {
     val _max = remainingOrDilated(max)
     val stop = now + _max
 
@@ -332,10 +372,20 @@ trait TestKitBase {
    */
   def expectMsg[T](max: FiniteDuration, obj: T): T = expectMsg_internal(max.dilated, obj)
 
-  private def expectMsg_internal[T](max: Duration, obj: T): T = {
+  /**
+   * Receive one message from the test actor and assert that it equals the
+   * given object. Wait time is bounded by the given duration, with an
+   * AssertionFailure being thrown in case of timeout.
+   *
+   * @return the received object
+   */
+  def expectMsg[T](max: FiniteDuration, hint: String, obj: T): T = expectMsg_internal(max.dilated, obj, Some(hint))
+
+  private def expectMsg_internal[T](max: Duration, obj: T, hint: Option[String] = None): T = {
     val o = receiveOne(max)
-    assert(o ne null, s"timeout ($max) during expectMsg while waiting for $obj")
-    assert(obj == o, s"expected $obj, found $o")
+    val hintOrEmptyString = hint.map(": " + _).getOrElse("")
+    assert(o ne null, s"timeout ($max) during expectMsg while waiting for $obj" + hintOrEmptyString)
+    assert(obj == o, s"expected $obj, found $o" + hintOrEmptyString)
     o.asInstanceOf[T]
   }
 
@@ -373,7 +423,7 @@ trait TestKitBase {
    * partial function matches and returns false. Use it to ignore certain
    * messages while waiting for a specific message.
    *
-   * @return the last received messsage, i.e. the first one for which the
+   * @return the last received message, i.e. the first one for which the
    *         partial function returned true
    */
   def fishForMessage(max: Duration = Duration.Undefined, hint: String = "")(f: PartialFunction[Any, Boolean]): Any = {
@@ -420,7 +470,7 @@ trait TestKitBase {
   private def expectMsgClass_internal[C](max: FiniteDuration, c: Class[C]): C = {
     val o = receiveOne(max)
     assert(o ne null, s"timeout ($max) during expectMsgClass waiting for $c")
-    assert(BoxedType(c) isInstance o, s"expected $c, found ${o.getClass}")
+    assert(BoxedType(c) isInstance o, s"expected $c, found ${o.getClass} ($o)")
     o.asInstanceOf[C]
   }
 
@@ -488,7 +538,8 @@ trait TestKitBase {
 
   private def checkMissingAndUnexpected(missing: Seq[Any], unexpected: Seq[Any],
                                         missingMessage: String, unexpectedMessage: String): Unit = {
-    assert(missing.isEmpty && unexpected.isEmpty,
+    assert(
+      missing.isEmpty && unexpected.isEmpty,
       (if (missing.isEmpty) "" else missing.mkString(missingMessage + " [", ", ", "] ")) +
         (if (unexpected.isEmpty) "" else unexpected.mkString(unexpectedMessage + " [", ", ", "]")))
   }
@@ -667,17 +718,58 @@ trait TestKitBase {
    *
    * If verifySystemShutdown is true, then an exception will be thrown on failure.
    */
-  def shutdown(actorSystem: ActorSystem = system,
-               duration: Duration = 5.seconds.dilated.min(10.seconds),
-               verifySystemShutdown: Boolean = false) {
+  def shutdown(
+    actorSystem:          ActorSystem = system,
+    duration:             Duration    = 5.seconds.dilated.min(10.seconds),
+    verifySystemShutdown: Boolean     = false) {
     TestKit.shutdownActorSystem(actorSystem, duration, verifySystemShutdown)
+  }
+
+  /**
+   * Spawns an actor as a child of this test actor, and returns the child's ActorRef.
+   * @param props Props to create the child actor
+   * @param name Actor name for the child actor
+   * @param supervisorStrategy Strategy should decide what to do with failures in the actor.
+   */
+  def childActorOf(props: Props, name: String, supervisorStrategy: SupervisorStrategy): ActorRef = {
+    testActor ! Spawn(props, Some(name), Some(supervisorStrategy))
+    expectMsgType[ActorRef]
+  }
+
+  /**
+   * Spawns an actor as a child of this test actor with an auto-generated name, and returns the child's ActorRef.
+   * @param props Props to create the child actor
+   * @param supervisorStrategy Strategy should decide what to do with failures in the actor.
+   */
+  def childActorOf(props: Props, supervisorStrategy: SupervisorStrategy): ActorRef = {
+    testActor ! Spawn(props, None, Some(supervisorStrategy))
+    expectMsgType[ActorRef]
+  }
+
+  /**
+   * Spawns an actor as a child of this test actor with a stopping supervisor strategy, and returns the child's ActorRef.
+   * @param props Props to create the child actor
+   * @param name Actor name for the child actor
+   */
+  def childActorOf(props: Props, name: String): ActorRef = {
+    testActor ! Spawn(props, Some(name), None)
+    expectMsgType[ActorRef]
+  }
+
+  /**
+   * Spawns an actor as a child of this test actor with an auto-generated name and stopping supervisor strategy, returning the child's ActorRef.
+   * @param props Props to create the child actor
+   */
+  def childActorOf(props: Props): ActorRef = {
+    testActor ! Spawn(props, None, None)
+    expectMsgType[ActorRef]
   }
 
   private def format(u: TimeUnit, d: Duration) = "%.3f %s".format(d.toUnit(u), u.toString.toLowerCase)
 }
 
 /**
- * Test kit for testing actors. Inheriting from this trait enables reception of
+ * Test kit for testing actors. Inheriting from this class enables reception of
  * replies from actors, which are queued by an internal actor and can be
  * examined using the `expectMsg...` methods. Assertions and bounds concerning
  * timing are available in the form of `within` blocks.
@@ -686,16 +778,20 @@ trait TestKitBase {
  * class Test extends TestKit(ActorSystem()) {
  *   try {
  *
- *     val test = system.actorOf(Props[SomeActor]
+ *     val test = system.actorOf(Props[SomeActor])
  *
- *     within (1 second) {
- *       test ! SomeWork
- *       expectMsg(Result1) // bounded to 1 second
- *       expectMsg(Result2) // bounded to the remainder of the 1 second
+ *       within (1.second) {
+ *         test ! SomeWork
+ *         expectMsg(Result1) // bounded to 1 second
+ *         expectMsg(Result2) // bounded to the remainder of the 1 second
+ *       }
+ *
+ *     } finally {
+ *       system.terminate()
  *     }
  *
  *   } finally {
- *     system.shutdown()
+ *     system.terminate()
  *   }
  * }
  * }}}
@@ -704,7 +800,7 @@ trait TestKitBase {
  *
  *  - the ActorSystem passed into the constructor needs to be shutdown,
  *    otherwise thread pools and memory will be leaked
- *  - this trait is not thread-safe (only one actor with one queue, one stack
+ *  - this class is not thread-safe (only one actor with one queue, one stack
  *    of `within` blocks); it is expected that the code is executed from a
  *    constructor as shown above, which makes this a non-issue, otherwise take
  *    care not to run tests within a single test class instance in parallel.
@@ -755,11 +851,12 @@ object TestKit {
    *
    * If verifySystemShutdown is true, then an exception will be thrown on failure.
    */
-  def shutdownActorSystem(actorSystem: ActorSystem,
-                          duration: Duration = 10.seconds,
-                          verifySystemShutdown: Boolean = false): Unit = {
-    actorSystem.shutdown()
-    try actorSystem.awaitTermination(duration) catch {
+  def shutdownActorSystem(
+    actorSystem:          ActorSystem,
+    duration:             Duration    = 10.seconds,
+    verifySystemShutdown: Boolean     = false): Unit = {
+    actorSystem.terminate()
+    try Await.ready(actorSystem.whenTerminated, duration) catch {
       case _: TimeoutException ⇒
         val msg = "Failed to stop [%s] within [%s] \n%s".format(actorSystem.name, duration,
           actorSystem.asInstanceOf[ActorSystemImpl].printTree)
@@ -772,12 +869,16 @@ object TestKit {
 /**
  * TestKit-based probe which allows sending, reception and reply.
  */
-class TestProbe(_application: ActorSystem) extends TestKit(_application) {
+class TestProbe(_application: ActorSystem, name: String) extends TestKit(_application) {
+
+  def this(_application: ActorSystem) = this(_application, "testProbe")
 
   /**
    * Shorthand to get the testActor.
    */
   def ref = testActor
+
+  protected override def testActorName = name
 
   /**
    * Send message to an actor while using the probe's TestActor as the sender.
@@ -805,6 +906,7 @@ class TestProbe(_application: ActorSystem) extends TestKit(_application) {
 
 object TestProbe {
   def apply()(implicit system: ActorSystem) = new TestProbe(system)
+  def apply(name: String)(implicit system: ActorSystem) = new TestProbe(system, name)
 }
 
 trait ImplicitSender { this: TestKitBase ⇒

@@ -1,3 +1,6 @@
+/**
+ * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com>
+ */
 package akka
 
 import sbt._
@@ -19,6 +22,9 @@ object SphinxDoc {
 
   def docsSettings = Seq(
     sourceDirectory in Sphinx <<= baseDirectory / "rst",
+    watchSources <++= (sourceDirectory in Sphinx, excludeFilter in Global) map { (source, excl) =>
+      source descendantsExcept ("*.rst", excl) get
+    },
     sphinxPackages in Sphinx <+= baseDirectory { _ / "_sphinx" / "pygments" },
     // copy akka-contrib/docs into our rst_preprocess/contrib (and apply substitutions)
     preprocess in Sphinx <<= (preprocess in Sphinx,
@@ -61,6 +67,7 @@ object SphinxDoc {
           case _          => s
         }),
         "sigarVersion" -> Dependencies.Compile.sigar.revision,
+        "sigarLoaderVersion" -> Dependencies.Compile.Provided.sigarLoader.revision,
         "github" -> GitHub.url(v)
       )
     },

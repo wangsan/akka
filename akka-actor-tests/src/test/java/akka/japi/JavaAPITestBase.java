@@ -5,11 +5,13 @@ import akka.event.LoggingAdapter;
 import akka.event.NoLogging;
 import akka.serialization.JavaSerializer;
 import org.junit.Test;
+import org.scalatest.junit.JUnitSuite;
+
 import java.util.concurrent.Callable;
 
 import static org.junit.Assert.*;
 
-public class JavaAPITestBase {
+public class JavaAPITestBase extends JUnitSuite {
 
   @Test
   public void shouldCreateSomeString() {
@@ -17,6 +19,7 @@ public class JavaAPITestBase {
     assertFalse(o.isEmpty());
     assertTrue(o.isDefined());
     assertEquals("abc", o.get());
+    assertEquals("abc", o.getOrElse("other"));
   }
 
   @Test
@@ -24,10 +27,12 @@ public class JavaAPITestBase {
     Option<String> o1 = Option.none();
     assertTrue(o1.isEmpty());
     assertFalse(o1.isDefined());
+    assertEquals("other", o1.getOrElse("other"));
 
     Option<Float> o2 = Option.none();
     assertTrue(o2.isEmpty());
     assertFalse(o2.isDefined());
+    assertEquals("other", o1.getOrElse("other"));
   }
 
   @Test
@@ -36,14 +41,14 @@ public class JavaAPITestBase {
     String s : Option.some("abc")) {
       return;
     }
-    fail("for-loop not entered");
+    org.junit.Assert.fail("for-loop not entered");
   }
 
   @Test
   public void shouldNotEnterForLoop() {
     for (@SuppressWarnings("unused")
     Object o : Option.none()) {
-      fail("for-loop entered");
+      org.junit.Assert.fail("for-loop entered");
     }
   }
 

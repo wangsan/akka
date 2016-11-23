@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.testconductor
 
@@ -8,16 +8,13 @@ import language.postfixOps
 import akka.actor._
 import akka.testkit.{ AkkaSpec, ImplicitSender, EventFilter, TestProbe, TimingTest }
 import scala.concurrent.duration._
-import akka.event.Logging
-import akka.util.Timeout
-import org.scalatest.BeforeAndAfterEach
 import java.net.{ InetSocketAddress, InetAddress }
 
 object BarrierSpec {
   final case class Failed(ref: ActorRef, thr: Throwable)
   val config = """
     akka.testconductor.barrier-timeout = 5s
-    akka.actor.provider = akka.remote.RemoteActorRefProvider
+    akka.actor.provider = remote
     akka.actor.debug.fsm = on
     akka.actor.debug.lifecycle = on
                """
@@ -556,7 +553,7 @@ class BarrierSpec extends AkkaSpec(BarrierSpec.config) with ImplicitSender {
 
   private def noMsg(probes: TestProbe*) {
     expectNoMsg(1 second)
-    probes foreach (_.msgAvailable should be(false))
+    probes foreach (_.msgAvailable should ===(false))
   }
 
   private def data(clients: Set[Controller.NodeInfo], barrier: String, arrived: List[ActorRef], previous: Data): Data = {

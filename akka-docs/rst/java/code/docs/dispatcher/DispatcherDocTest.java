@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.dispatcher;
 
@@ -7,6 +7,7 @@ import akka.dispatch.ControlMessage;
 import akka.dispatch.RequiresMessageQueue;
 import akka.testkit.AkkaSpec;
 import com.typesafe.config.ConfigFactory;
+import docs.AbstractJavaTest;
 import docs.actor.MyBoundedUntypedActor;
 import docs.actor.MyUntypedActor;
 import org.junit.ClassRule;
@@ -25,7 +26,7 @@ import akka.event.LoggingAdapter;
 
 //#imports-prio-mailbox
 import akka.dispatch.PriorityGenerator;
-import akka.dispatch.UnboundedPriorityMailbox;
+import akka.dispatch.UnboundedStablePriorityMailbox;
 import akka.testkit.AkkaJUnitActorSystemResource;
 import akka.testkit.JavaTestKit;
 import com.typesafe.config.Config;
@@ -36,7 +37,7 @@ import com.typesafe.config.Config;
 
 //#imports-required-mailbox
 
-public class DispatcherDocTest {
+public class DispatcherDocTest extends AbstractJavaTest {
 
   @ClassRule
   public static AkkaJUnitActorSystemResource actorSystemResource =
@@ -68,13 +69,22 @@ public class DispatcherDocTest {
 
   @SuppressWarnings("unused")
   @Test
+  public void defineFixedPoolSizeDispatcher() {
+    //#defining-fixed-pool-size-dispatcher
+    ActorRef myActor = system.actorOf(Props.create(MyUntypedActor.class)
+        .withDispatcher("blocking-io-dispatcher"));
+    //#defining-fixed-pool-size-dispatcher
+  }
+
+  @SuppressWarnings("unused")
+  @Test
   public void definePinnedDispatcher() {
     //#defining-pinned-dispatcher
     ActorRef myActor = system.actorOf(Props.create(MyUntypedActor.class)
         .withDispatcher("my-pinned-dispatcher"));
     //#defining-pinned-dispatcher
   }
-  
+
   @SuppressWarnings("unused")
   public void compileLookup() {
     //#lookup
@@ -188,7 +198,7 @@ public class DispatcherDocTest {
 
   static
   //#prio-mailbox
-  public class MyPrioMailbox extends UnboundedPriorityMailbox {
+  public class MyPrioMailbox extends UnboundedStablePriorityMailbox {
     // needed for reflective instantiation
     public MyPrioMailbox(ActorSystem.Settings settings, Config config) {
       // Create a new PriorityGenerator, lower prio means more important

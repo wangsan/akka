@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.actor.dispatch
 
@@ -87,7 +87,6 @@ object DispatchersSpec {
   }
 }
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class DispatchersSpec extends AkkaSpec(DispatchersSpec.config) with ImplicitSender {
   import DispatchersSpec._
   val df = system.dispatchers
@@ -105,15 +104,15 @@ class DispatchersSpec extends AkkaSpec(DispatchersSpec.config) with ImplicitSend
   def ofType[T <: MessageDispatcher: ClassTag]: (MessageDispatcher) ⇒ Boolean = _.getClass == implicitly[ClassTag[T]].runtimeClass
 
   def typesAndValidators: Map[String, (MessageDispatcher) ⇒ Boolean] = Map(
-    "PinnedDispatcher" -> ofType[PinnedDispatcher],
-    "Dispatcher" -> ofType[Dispatcher])
+    "PinnedDispatcher" → ofType[PinnedDispatcher],
+    "Dispatcher" → ofType[Dispatcher])
 
   def validTypes = typesAndValidators.keys.toList
 
   val defaultDispatcherConfig = settings.config.getConfig("akka.actor.default-dispatcher")
 
   lazy val allDispatchers: Map[String, MessageDispatcher] = {
-    validTypes.map(t ⇒ (t, from(ConfigFactory.parseMap(Map(tipe -> t, id -> t).asJava).
+    validTypes.map(t ⇒ (t, from(ConfigFactory.parseMap(Map(tipe → t, id → t).asJava).
       withFallback(defaultDispatcherConfig)))).toMap
   }
 
@@ -129,12 +128,12 @@ class DispatchersSpec extends AkkaSpec(DispatchersSpec.config) with ImplicitSend
 
     "use defined properties" in {
       val dispatcher = lookup("myapp.mydispatcher")
-      dispatcher.throughput should be(17)
+      dispatcher.throughput should ===(17)
     }
 
     "use specific id" in {
       val dispatcher = lookup("myapp.mydispatcher")
-      dispatcher.id should be("myapp.mydispatcher")
+      dispatcher.id should ===("myapp.mydispatcher")
     }
 
     "complain about missing config" in {
@@ -145,13 +144,13 @@ class DispatchersSpec extends AkkaSpec(DispatchersSpec.config) with ImplicitSend
 
     "have only one default dispatcher" in {
       val dispatcher = lookup(Dispatchers.DefaultDispatcherId)
-      dispatcher should be(defaultGlobalDispatcher)
-      dispatcher should be(system.dispatcher)
+      dispatcher should ===(defaultGlobalDispatcher)
+      dispatcher should ===(system.dispatcher)
     }
 
     "throw ConfigurationException if type does not exist" in {
       intercept[ConfigurationException] {
-        from(ConfigFactory.parseMap(Map(tipe -> "typedoesntexist", id -> "invalid-dispatcher").asJava).
+        from(ConfigFactory.parseMap(Map(tipe → "typedoesntexist", id → "invalid-dispatcher").asJava).
           withFallback(defaultDispatcherConfig))
       }
     }
@@ -164,7 +163,7 @@ class DispatchersSpec extends AkkaSpec(DispatchersSpec.config) with ImplicitSend
     "provide lookup of dispatchers by id" in {
       val d1 = lookup("myapp.mydispatcher")
       val d2 = lookup("myapp.mydispatcher")
-      d1 should be(d2)
+      d1 should ===(d2)
     }
 
     "include system name and dispatcher id in thread names for fork-join-executor" in {

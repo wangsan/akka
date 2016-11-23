@@ -1,10 +1,17 @@
+.. _typed-actors-scala:
+
 Typed Actors
 ====================
+
+.. note::
+
+  This module will be deprecated as it will be superseded by the :ref:`typed-scala`
+  project which is currently being developed in open preview mode.
 
 Akka Typed Actors is an implementation of the `Active Objects <http://en.wikipedia.org/wiki/Active_object>`_ pattern.
 Essentially turning method invocations into asynchronous dispatch instead of synchronous that has been the default way since Smalltalk came out.
 
-Typed Actors consist of 2 "parts", a public interface and an implementation, and if you've done any work in "enterprise" Java, this will be very familiar to you. As with normal Actors you have an external API (the public interface instance) that will delegate methodcalls asynchronously to
+Typed Actors consist of 2 "parts", a public interface and an implementation, and if you've done any work in "enterprise" Java, this will be very familiar to you. As with normal Actors you have an external API (the public interface instance) that will delegate method calls asynchronously to
 a private instance of the implementation.
 
 The advantage of Typed Actors vs. Actors is that with TypedActors you have a
@@ -28,7 +35,7 @@ lies in interfacing between private sphere and the public, but you don’t want
 that many doors inside your house, do you? For a longer discussion see `this
 blog post <http://letitcrash.com/post/19074284309/when-to-use-typedactors>`_.
 
-A bit more background: TypedActors can very easily be abused as RPC, and that
+A bit more background: TypedActors can easily be abused as RPC, and that
 is an abstraction which is `well-known
 <http://doc.akka.io/docs/misc/smli_tr-94-29.pdf>`_
 to be leaky. Hence TypedActors are not what we think of first when we talk
@@ -136,7 +143,7 @@ This call is asynchronous, and the Future returned can be used for asynchronous 
 Stopping Typed Actors
 ---------------------
 
-Since Akkas Typed Actors are backed by Akka Actors they must be stopped when they aren't needed anymore.
+Since Akka's Typed Actors are backed by Akka Actors they must be stopped when they aren't needed anymore.
 
 .. includecode:: code/docs/actor/TypedActorDocSpec.scala
    :include: typed-actor-stop
@@ -184,7 +191,7 @@ Receive arbitrary messages
 --------------------------
 
 If your implementation class of your TypedActor extends ``akka.actor.TypedActor.Receiver``,
-all messages that are not ``MethodCall``s will be passed into the ``onReceive``-method.
+all messages that are not ``MethodCall`` instances will be passed into the ``onReceive``-method.
 
 This allows you to react to DeathWatch ``Terminated``-messages and other types of messages,
 e.g. when interfacing with untyped actors.
@@ -214,3 +221,21 @@ Here's an example on how you can use traits to mix in behavior in your Typed Act
 .. includecode:: code/docs/actor/TypedActorDocSpec.scala#typed-actor-supercharge
 
 .. includecode:: code/docs/actor/TypedActorDocSpec.scala#typed-actor-supercharge-usage
+
+Typed Router pattern
+--------------------
+
+Sometimes you want to spread messages between multiple actors. The easiest way to achieve this in Akka is to use a :ref:`Router <routing-scala>`,
+which can implement a specific routing logic, such as ``smallest-mailbox`` or ``consistent-hashing`` etc.
+
+Routers are not provided directly for typed actors, but it is really easy to leverage an untyped router and use a typed proxy in front of it.
+To showcase this let's create typed actors that assign themselves some random ``id``, so we know that in fact, the router has sent the message to different actors:
+
+.. includecode:: code/docs/actor/TypedActorDocSpec.scala#typed-router-types
+
+In order to round robin among a few instances of such actors, you can simply create a plain untyped router,
+and then facade it with a ``TypedActor`` like shown in the example below. This works because typed actors of course
+communicate using the same mechanisms as normal actors, and methods calls on them get transformed into message sends of ``MethodCall`` messages.
+
+.. includecode:: code/docs/actor/TypedActorDocSpec.scala#typed-router
+

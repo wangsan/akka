@@ -3,7 +3,7 @@ package akka.actor
 import language.postfixOps
 
 import akka.testkit.AkkaSpec
-import akka.dispatch.{ ThreadPoolConfig, ThreadPoolConfigBuilder, UnboundedMailbox }
+import akka.dispatch.{ ThreadPoolConfig }
 import scala.concurrent.duration._
 
 object ConsistencySpec {
@@ -52,7 +52,7 @@ object ConsistencySpec {
 class ConsistencySpec extends AkkaSpec(ConsistencySpec.config) {
   import ConsistencySpec._
 
-  override def expectedTestDuration: FiniteDuration = 3.minutes
+  override def expectedTestDuration: FiniteDuration = 5.minutes
 
   "The Akka actor model implementation" must {
     "provide memory consistency" in {

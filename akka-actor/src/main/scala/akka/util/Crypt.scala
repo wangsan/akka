@@ -1,11 +1,11 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.util
 
 import java.security.{ MessageDigest, SecureRandom }
-//FIXME DOCS
+@deprecated(message = "Not in use.", since = "2.4-M1")
 object Crypt {
   val hex = "0123456789ABCDEF"
   val lineSeparator = System.getProperty("line.separator")

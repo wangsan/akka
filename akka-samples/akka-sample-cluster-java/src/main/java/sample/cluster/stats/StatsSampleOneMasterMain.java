@@ -6,8 +6,10 @@ import com.typesafe.config.ConfigFactory;
 import akka.actor.ActorSystem;
 import akka.actor.PoisonPill;
 import akka.actor.Props;
-import akka.contrib.pattern.ClusterSingletonManager;
-import akka.contrib.pattern.ClusterSingletonProxy;
+import akka.cluster.singleton.ClusterSingletonManager;
+import akka.cluster.singleton.ClusterSingletonManagerSettings;
+import akka.cluster.singleton.ClusterSingletonProxy;
+import akka.cluster.singleton.ClusterSingletonProxySettings;
 
 public class StatsSampleOneMasterMain {
 
@@ -32,14 +34,18 @@ public class StatsSampleOneMasterMain {
       ActorSystem system = ActorSystem.create("ClusterSystem", config);
 
       //#create-singleton-manager
-      system.actorOf(ClusterSingletonManager.defaultProps(
-          Props.create(StatsService.class), "statsService",
-          PoisonPill.getInstance(), "compute"), "singleton");
+      ClusterSingletonManagerSettings settings = ClusterSingletonManagerSettings.create(system)
+          .withRole("compute");
+      system.actorOf(ClusterSingletonManager.props(
+          Props.create(StatsService.class), PoisonPill.getInstance(), settings),
+          "statsService");
       //#create-singleton-manager
 
       //#singleton-proxy
-      system.actorOf(ClusterSingletonProxy.defaultProps("/user/singleton/statsService",
-        "compute"), "statsServiceProxy");
+      ClusterSingletonProxySettings proxySettings =
+          ClusterSingletonProxySettings.create(system).withRole("compute");
+      system.actorOf(ClusterSingletonProxy.props("/user/statsService",
+          proxySettings), "statsServiceProxy");
       //#singleton-proxy
     }
 

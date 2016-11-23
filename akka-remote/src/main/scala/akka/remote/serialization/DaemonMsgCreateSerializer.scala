@@ -1,14 +1,13 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.remote.serialization
 
-import akka.serialization.{ Serializer, SerializationExtension }
-import java.io.Serializable
-import com.google.protobuf.ByteString
+import akka.serialization.{ BaseSerializer, SerializationExtension }
+import akka.protobuf.ByteString
 import com.typesafe.config.{ Config, ConfigFactory }
-import akka.actor.{ Actor, ActorRef, Deploy, ExtendedActorSystem, NoScopeGiven, Props, Scope }
+import akka.actor.{ Deploy, ExtendedActorSystem, NoScopeGiven, Props, Scope }
 import akka.remote.DaemonMsgCreate
 import akka.remote.WireFormats.{ DaemonMsgCreateData, DeployData, PropsData }
 import akka.routing.{ NoRouter, RouterConfig }
@@ -16,7 +15,7 @@ import scala.reflect.ClassTag
 import util.{ Failure, Success }
 
 /**
- * Serializes akka's internal DaemonMsgCreate using protobuf
+ * Serializes Akka's internal DaemonMsgCreate using protobuf
  * for the core structure of DaemonMsgCreate, Props and Deploy.
  * Serialization of contained RouterConfig, Config, and Scope
  * is done with configured serializer for those classes, by
@@ -24,13 +23,21 @@ import util.{ Failure, Success }
  *
  * INTERNAL API
  */
-private[akka] class DaemonMsgCreateSerializer(val system: ExtendedActorSystem) extends Serializer {
+private[akka] class DaemonMsgCreateSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
   import ProtobufSerializer.serializeActorRef
   import ProtobufSerializer.deserializeActorRef
   import Deploy.NoDispatcherGiven
 
+  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
+  def this() = this(null)
+
+  // TODO remove this when deprecated this() is removed
+  override val identifier: Int =
+    if (system eq null) 3
+    else identifierFromConfig
+
   def includeManifest: Boolean = false
-  def identifier = 3
+
   lazy val serialization = SerializationExtension(system)
 
   def toBinary(obj: AnyRef): Array[Byte] = obj match {
@@ -54,7 +61,7 @@ private[akka] class DaemonMsgCreateSerializer(val system: ExtendedActorSystem) e
           .setClazz(props.clazz.getName)
           .setDeploy(deployProto(props.deploy))
         props.args map serialize foreach builder.addArgs
-        props.args map (_.getClass.getName) foreach builder.addClasses
+        props.args map (a ⇒ if (a == null) "null" else a.getClass.getName) foreach builder.addClasses
         builder.build
       }
 
@@ -93,7 +100,7 @@ private[akka] class DaemonMsgCreateSerializer(val system: ExtendedActorSystem) e
       import scala.collection.JavaConverters._
       val clazz = system.dynamicAccess.getClassFor[AnyRef](proto.getProps.getClazz).get
       val args: Vector[AnyRef] = (proto.getProps.getArgsList.asScala zip proto.getProps.getClassesList.asScala)
-        .map(p ⇒ deserialize(p._1, system.dynamicAccess.getClassFor[AnyRef](p._2).get))(collection.breakOut)
+        .map(deserialize)(collection.breakOut)
       Props(deploy(proto.getProps.getDeploy), clazz, args)
     }
 
@@ -105,6 +112,10 @@ private[akka] class DaemonMsgCreateSerializer(val system: ExtendedActorSystem) e
   }
 
   protected def serialize(any: Any): ByteString = ByteString.copyFrom(serialization.serialize(any.asInstanceOf[AnyRef]).get)
+
+  protected def deserialize(p: (ByteString, String)): AnyRef =
+    if (p._1.isEmpty && p._2 == "null") null
+    else deserialize(p._1, system.dynamicAccess.getClassFor[AnyRef](p._2).get)
 
   protected def deserialize[T: ClassTag](data: ByteString, clazz: Class[T]): T = {
     val bytes = data.toByteArray

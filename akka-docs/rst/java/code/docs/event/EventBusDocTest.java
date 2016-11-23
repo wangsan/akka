@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.event;
 
@@ -7,6 +7,7 @@ import akka.event.japi.EventBus;
 
 import java.util.concurrent.TimeUnit;
 
+import docs.AbstractJavaTest;
 import org.junit.ClassRule;
 import org.junit.Test;
 
@@ -39,11 +40,11 @@ import akka.event.japi.ScanningEventBus;
 //#scanning-bus
 
 //#actor-bus
-import akka.event.japi.ActorEventBus;
+import akka.event.japi.ManagedActorEventBus;
 
 //#actor-bus
 
-public class EventBusDocTest {
+public class EventBusDocTest extends AbstractJavaTest {
   
   public static class Event {}
   public static class Subscriber {}
@@ -232,7 +233,7 @@ public class EventBusDocTest {
   
   static
   //#actor-bus
-  public class ActorBusImpl extends ActorEventBus<Notification> {
+  public class ActorBusImpl extends ManagedActorEventBus<Notification> {
 
     // the ActorSystem will be used for book-keeping operations, such as subscribers terminating
     public ActorBusImpl(ActorSystem system) {
@@ -304,7 +305,7 @@ public class EventBusDocTest {
   }
   
   @Test
-  public void demonstrateActorClassification() {
+  public void demonstrateManagedActorClassification() {
       //#actor-bus-test
       ActorRef observer1 = new JavaTestKit(system).getRef();
       ActorRef observer2 = new JavaTestKit(system).getRef();

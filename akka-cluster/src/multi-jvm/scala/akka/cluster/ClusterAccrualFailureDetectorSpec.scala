@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -40,9 +40,9 @@ abstract class ClusterAccrualFailureDetectorSpec
       awaitClusterUp(first, second, third)
 
       Thread.sleep(5.seconds.dilated.toMillis) // let them heartbeat
-      cluster.failureDetector.isAvailable(first) should be(true)
-      cluster.failureDetector.isAvailable(second) should be(true)
-      cluster.failureDetector.isAvailable(third) should be(true)
+      cluster.failureDetector.isAvailable(first) should ===(true)
+      cluster.failureDetector.isAvailable(second) should ===(true)
+      cluster.failureDetector.isAvailable(third) should ===(true)
 
       enterBarrier("after-1")
     }
@@ -59,14 +59,14 @@ abstract class ClusterAccrualFailureDetectorSpec
           // detect failure...
           awaitCond(!cluster.failureDetector.isAvailable(second), 15.seconds)
           // other connections still ok
-          cluster.failureDetector.isAvailable(third) should be(true)
+          cluster.failureDetector.isAvailable(third) should ===(true)
         }
 
         runOn(second) {
           // detect failure...
           awaitCond(!cluster.failureDetector.isAvailable(first), 15.seconds)
           // other connections still ok
-          cluster.failureDetector.isAvailable(third) should be(true)
+          cluster.failureDetector.isAvailable(third) should ===(true)
         }
 
         enterBarrier("partitioned")
@@ -96,11 +96,11 @@ abstract class ClusterAccrualFailureDetectorSpec
       enterBarrier("third-shutdown")
 
       runOn(first, second) {
-        // remaning nodes should detect failure...
+        // remaining nodes should detect failure...
         awaitCond(!cluster.failureDetector.isAvailable(third), 15.seconds)
         // other connections still ok
-        cluster.failureDetector.isAvailable(first) should be(true)
-        cluster.failureDetector.isAvailable(second) should be(true)
+        cluster.failureDetector.isAvailable(first) should ===(true)
+        cluster.failureDetector.isAvailable(second) should ===(true)
       }
 
       enterBarrier("after-3")

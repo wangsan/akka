@@ -1,12 +1,11 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster
 
 import scala.collection.immutable
 import MemberStatus._
-import akka.cluster.protobuf.ClusterMessageSerializer
 import scala.concurrent.duration.Deadline
 
 /**
@@ -61,9 +60,9 @@ private[cluster] object Gossip {
  */
 @SerialVersionUID(1L)
 private[cluster] final case class Gossip(
-  members: immutable.SortedSet[Member], // sorted set of members with their status, sorted by address
-  overview: GossipOverview = GossipOverview(),
-  version: VectorClock = VectorClock()) { // vector clock version
+  members:  immutable.SortedSet[Member], // sorted set of members with their status, sorted by address
+  overview: GossipOverview              = GossipOverview(),
+  version:  VectorClock                 = VectorClock()) { // vector clock version
 
   if (Cluster.isAssertInvariantsEnabled) assertInvariants()
 
@@ -73,19 +72,19 @@ private[cluster] final case class Gossip(
       throw new IllegalArgumentException(s"Live members must have status [${Removed}], " +
         s"got [${members.filter(_.status == Removed)}]")
 
-    val inReachabilityButNotMember = overview.reachability.allObservers -- members.map(_.uniqueAddress)
+    val inReachabilityButNotMember = overview.reachability.allObservers diff members.map(_.uniqueAddress)
     if (inReachabilityButNotMember.nonEmpty)
       throw new IllegalArgumentException("Nodes not part of cluster in reachability table, got [%s]"
         format inReachabilityButNotMember.mkString(", "))
 
-    val seenButNotMember = overview.seen -- members.map(_.uniqueAddress)
+    val seenButNotMember = overview.seen diff members.map(_.uniqueAddress)
     if (seenButNotMember.nonEmpty)
       throw new IllegalArgumentException("Nodes not part of cluster have marked the Gossip as seen, got [%s]"
         format seenButNotMember.mkString(", "))
   }
 
   @transient private lazy val membersMap: Map[UniqueAddress, Member] =
-    members.map(m ⇒ m.uniqueAddress -> m)(collection.breakOut)
+    members.map(m ⇒ m.uniqueAddress → m)(collection.breakOut)
 
   /**
    * Increments the version for this 'Node'.
@@ -129,22 +128,22 @@ private[cluster] final case class Gossip(
    * Merges the seen table of two Gossip instances.
    */
   def mergeSeen(that: Gossip): Gossip =
-    this copy (overview = overview copy (seen = overview.seen ++ that.overview.seen))
+    this copy (overview = overview copy (seen = overview.seen union that.overview.seen))
 
   /**
    * Merges two Gossip instances including membership tables, and the VectorClock histories.
    */
   def merge(that: Gossip): Gossip = {
-    import Member.ordering
 
     // 1. merge vector clocks
     val mergedVClock = this.version merge that.version
 
     // 2. merge members by selecting the single Member with highest MemberStatus out of the Member groups
-    val mergedMembers = Gossip.emptyMembers ++ Member.pickHighestPriority(this.members, that.members)
+    val mergedMembers = Gossip.emptyMembers union Member.pickHighestPriority(this.members, that.members)
 
     // 3. merge reachability table by picking records with highest version
-    val mergedReachability = this.overview.reachability.merge(mergedMembers.map(_.uniqueAddress),
+    val mergedReachability = this.overview.reachability.merge(
+      mergedMembers.map(_.uniqueAddress),
       that.overview.reachability)
 
     // 4. Nobody can have seen this new gossip yet
@@ -159,29 +158,39 @@ private[cluster] final case class Gossip(
    *
    * @return true if convergence have been reached and false if not
    */
-  def convergence: Boolean = {
+  def convergence(selfUniqueAddress: UniqueAddress): Boolean = {
     // First check that:
-    //   1. we don't have any members that are unreachable, or
+    //   1. we don't have any members that are unreachable, excluding observations from members
+    //      that have status DOWN, or
     //   2. all unreachable members in the set have status DOWN or EXITING
     // Else we can't continue to check for convergence
     // When that is done we check that all members with a convergence
-    // status is in the seen table and has the latest vector clock
-    // version
-    val unreachable = overview.reachability.allUnreachableOrTerminated map member
+    // status is in the seen table, i.e. has seen this version
+    val unreachable = reachabilityExcludingDownedObservers.allUnreachableOrTerminated.collect {
+      case node if (node != selfUniqueAddress) ⇒ member(node)
+    }
     unreachable.forall(m ⇒ Gossip.convergenceSkipUnreachableWithMemberStatus(m.status)) &&
       !members.exists(m ⇒ Gossip.convergenceMemberStatus(m.status) && !seenByNode(m.uniqueAddress))
   }
 
-  def isLeader(node: UniqueAddress): Boolean = leader == Some(node)
+  lazy val reachabilityExcludingDownedObservers: Reachability = {
+    val downed = members.collect { case m if m.status == Down ⇒ m }
+    overview.reachability.removeObservers(downed.map(_.uniqueAddress))
+  }
 
-  def leader: Option[UniqueAddress] = leaderOf(members)
+  def isLeader(node: UniqueAddress, selfUniqueAddress: UniqueAddress): Boolean =
+    leader(selfUniqueAddress) == Some(node)
 
-  def roleLeader(role: String): Option[UniqueAddress] = leaderOf(members.filter(_.hasRole(role)))
+  def leader(selfUniqueAddress: UniqueAddress): Option[UniqueAddress] =
+    leaderOf(members, selfUniqueAddress)
 
-  private def leaderOf(mbrs: immutable.SortedSet[Member]): Option[UniqueAddress] = {
+  def roleLeader(role: String, selfUniqueAddress: UniqueAddress): Option[UniqueAddress] =
+    leaderOf(members.filter(_.hasRole(role)), selfUniqueAddress)
+
+  private def leaderOf(mbrs: immutable.SortedSet[Member], selfUniqueAddress: UniqueAddress): Option[UniqueAddress] = {
     val reachableMembers =
       if (overview.reachability.isAllReachable) mbrs
-      else mbrs.filter(m ⇒ overview.reachability.isReachable(m.uniqueAddress))
+      else mbrs.filter(m ⇒ overview.reachability.isReachable(m.uniqueAddress) || m.uniqueAddress == selfUniqueAddress)
     if (reachableMembers.isEmpty) None
     else reachableMembers.find(m ⇒ Gossip.leaderMemberStatus(m.status)).
       orElse(Some(reachableMembers.min(Member.leaderStatusOrdering))).map(_.uniqueAddress)
@@ -192,7 +201,8 @@ private[cluster] final case class Gossip(
   def isSingletonCluster: Boolean = members.size == 1
 
   def member(node: UniqueAddress): Member = {
-    membersMap.getOrElse(node,
+    membersMap.getOrElse(
+      node,
       Member.removed(node)) // placeholder for removed member
   }
 
@@ -201,6 +211,12 @@ private[cluster] final case class Gossip(
   def youngestMember: Member = {
     require(members.nonEmpty, "No youngest when no members")
     members.maxBy(m ⇒ if (m.upNumber == Int.MaxValue) 0 else m.upNumber)
+  }
+
+  def prune(removedNode: VectorClock.Node): Gossip = {
+    val newVersion = version.prune(removedNode)
+    if (newVersion eq version) this
+    else copy(version = newVersion)
   }
 
   override def toString =
@@ -213,8 +229,8 @@ private[cluster] final case class Gossip(
  */
 @SerialVersionUID(1L)
 private[cluster] final case class GossipOverview(
-  seen: Set[UniqueAddress] = Set.empty,
-  reachability: Reachability = Reachability.empty) {
+  seen:         Set[UniqueAddress] = Set.empty,
+  reachability: Reachability       = Reachability.empty) {
 
   override def toString =
     s"GossipOverview(reachability = [$reachability], seen = [${seen.mkString(", ")}])"
@@ -238,11 +254,11 @@ object GossipEnvelope {
  */
 @SerialVersionUID(2L)
 private[cluster] class GossipEnvelope private (
-  val from: UniqueAddress,
-  val to: UniqueAddress,
-  @volatile var g: Gossip,
-  serDeadline: Deadline,
-  @transient @volatile var ser: () ⇒ Gossip) extends ClusterMessage {
+  val from:                    UniqueAddress,
+  val to:                      UniqueAddress,
+  @volatile var g:             Gossip,
+  serDeadline:                 Deadline,
+  @transient @volatile var ser:() ⇒ Gossip) extends ClusterMessage {
 
   def gossip: Gossip = {
     deserialize()

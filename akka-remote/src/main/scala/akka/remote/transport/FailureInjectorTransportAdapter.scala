@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.transport
 
@@ -11,10 +11,9 @@ import akka.remote.transport.AssociationHandle.{ HandleEvent, HandleEventListene
 import akka.remote.transport.Transport._
 import akka.util.ByteString
 import java.util.concurrent.ConcurrentHashMap
-import scala.concurrent.forkjoin.ThreadLocalRandom
+import java.util.concurrent.ThreadLocalRandom
 import scala.concurrent.{ Future, Promise }
 import scala.util.control.NoStackTrace
-import scala.util.Try
 
 @SerialVersionUID(1L)
 final case class FailureInjectorException(msg: String) extends AkkaException(msg) with NoStackTrace
@@ -57,7 +56,7 @@ private[remote] class FailureInjectorTransportAdapter(wrappedTransport: Transpor
   extends AbstractTransportAdapter(wrappedTransport)(extendedSystem.dispatcher) with AssociationEventListener {
 
   private def rng = ThreadLocalRandom.current()
-  private val log = Logging(extendedSystem, "FailureInjector (gremlin)")
+  private val log = Logging(extendedSystem, getClass.getName)
   private val shouldDebugLog: Boolean = extendedSystem.settings.config.getBoolean("akka.remote.gremlin.debug")
 
   @volatile private var upstreamListener: Option[AssociationEventListener] = None
@@ -78,8 +77,9 @@ private[remote] class FailureInjectorTransportAdapter(wrappedTransport: Transpor
     case _ ⇒ wrappedTransport.managementCommand(cmd)
   }
 
-  protected def interceptListen(listenAddress: Address,
-                                listenerFuture: Future[AssociationEventListener]): Future[AssociationEventListener] = {
+  protected def interceptListen(
+    listenAddress:  Address,
+    listenerFuture: Future[AssociationEventListener]): Future[AssociationEventListener] = {
     log.warning("FailureInjectorTransport is active on this system. Gremlins might munch your packets.")
     listenerFuture.onSuccess {
       // Side effecting: As this class is not an actor, the only way to safely modify state is through volatile vars.
@@ -141,8 +141,9 @@ private[remote] class FailureInjectorTransportAdapter(wrappedTransport: Transpor
 /**
  * INTERNAL API
  */
-private[remote] final case class FailureInjectorHandle(_wrappedHandle: AssociationHandle,
-                                                       private val gremlinAdapter: FailureInjectorTransportAdapter)
+private[remote] final case class FailureInjectorHandle(
+  _wrappedHandle:             AssociationHandle,
+  private val gremlinAdapter: FailureInjectorTransportAdapter)
   extends AbstractTransportAdapterHandle(_wrappedHandle, FailureInjectorSchemeIdentifier)
   with HandleEventListener {
   import gremlinAdapter.extendedSystem.dispatcher

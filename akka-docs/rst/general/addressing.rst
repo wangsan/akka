@@ -75,11 +75,7 @@ Since actors are created in a strictly hierarchical fashion, there exists a
 unique sequence of actor names given by recursively following the supervision
 links between child and parent down towards the root of the actor system. This
 sequence can be seen as enclosing folders in a file system, hence we adopted
-the name “path” to refer to it. As in some real file-systems there also are
-“symbolic links”, i.e. one actor may be reachable using more than one path,
-where all but one involve some translation which decouples part of the path
-from the actor’s actual supervision ancestor line; these specialities are
-described in the sub-sections to follow.
+the name “path” to refer to it, although actor hierarchy has some fundamental difference from file system hierarchy.
 
 An actor path consists of an anchor, which identifies the actor system,
 followed by the concatenation of the path elements, from root guardian to the
@@ -94,11 +90,6 @@ matches that actor’s life-cycle; an actor path represents a name which may or
 may not be inhabited by an actor and the path itself does not have a life-cycle,
 it never becomes invalid. You can create an actor path without creating an actor,
 but you cannot create an actor reference without creating corresponding actor.
-
-.. note::
-
-  That definition does not hold for ``actorFor``, which is one of the reasons why
-  ``actorFor`` is deprecated in favor of ``actorSelection``.
 
 You can create an actor, terminate it, and then create a new actor with the same
 actor path. The newly created actor is a new incarnation of the actor. It is not
@@ -116,9 +107,9 @@ actors in the hierarchy from the root up. Examples are::
   "akka://my-sys/user/service-a/worker1"                   // purely local
   "akka.tcp://my-sys@host.example.com:5678/user/service-b" // remote
 
-Here, ``akka.tcp`` is the default remote transport for the 2.2 release; other transports
-are pluggable. A remote host using UDP would be accessible by using ``akka.udp``.
-The interpretation of the host and port part (i.e.``serv.example.com:5678`` in the example)
+Here, ``akka.tcp`` is the default remote transport for the 2.4 release; other transports
+are pluggable.
+The interpretation of the host and port part (i.e. ``host.example.com:5678`` in the example)
 depends on the transport mechanism used, but it must abide by the URI structural rules.
 
 Logical Actor Paths
@@ -147,6 +138,18 @@ One important aspect is that a physical actor path never spans multiple actor
 systems or JVMs. This means that the logical path (supervision hierarchy) and
 the physical path (actor deployment) of an actor may diverge if one of its
 ancestors is remotely supervised.
+
+
+Actor path alias or symbolic link?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+As in some real file-systems you might think of a “path alias” or “symbolic link” for an actor,
+i.e. one actor may be reachable using more than one path.
+However, you should note that actor hierarchy is different from file system hierarchy.
+You cannot freely create actor paths like symbolic links to refer to arbitrary actors.
+As described in the above logical and physical actor path sections,
+an actor path must be either logical path which represents supervision hierarchy, or
+physical path which represents actor deployment.
+
 
 How are Actor References obtained?
 ----------------------------------
@@ -178,17 +181,6 @@ is looked up when delivering each message.
 To acquire an :class:`ActorRef` that is bound to the life-cycle of a specific actor
 you need to send a message, such as the built-in :class:`Identify` message, to the actor
 and use the ``sender()`` reference of a reply from the actor.
-
-.. note::
-
-  ``actorFor`` is deprecated in favor of ``actorSelection`` because actor references
-  acquired with ``actorFor`` behave differently for local and remote actors.
-  In the case of a local actor reference, the named actor needs to exist before the
-  lookup, or else the acquired reference will be an :class:`EmptyLocalActorRef`.
-  This will be true even if an actor with that exact path is created after acquiring
-  the actor reference. For remote actor references acquired with `actorFor` the
-  behaviour is different and sending messages to such a reference will under the hood
-  look up the actor by path on the remote system for every message send.
 
 Absolute vs. Relative Paths
 ```````````````````````````
@@ -226,7 +218,7 @@ Selections may be formulated using the :meth:`ActorSystem.actorSelection` and
   context.actorSelection("../*") ! msg
 
 will send `msg` to all siblings including the current actor. As for references
-obtained using `actorFor`, a traversal of the supervision hierarchy is done in
+obtained using `actorSelection`, a traversal of the supervision hierarchy is done in
 order to perform the message send. As the exact set of actors which match a
 selection may change even while a message is making its way to the recipients,
 it is not possible to watch a selection for liveliness changes. In order to do
@@ -237,8 +229,8 @@ release.
 
 .. _actorOf-vs-actorSelection:
 
-Summary: ``actorOf`` vs. ``actorSelection`` vs. ``actorFor``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Summary: ``actorOf`` vs. ``actorSelection``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. note::
 
@@ -253,9 +245,6 @@ Summary: ``actorOf`` vs. ``actorSelection`` vs. ``actorFor``
     delivered, i.e. does not create actors, or verify existence of actors
     when the selection is created.
 
-  - ``actorFor`` (deprecated in favor of actorSelection) only ever looks up an
-    existing actor, i.e. does not create one.
-
 Actor Reference and Path Equality
 ---------------------------------
 
@@ -266,12 +255,6 @@ terminated actor does not compare equal to a reference pointing to another (re-c
 actor with the same path. Note that a restart of an actor caused by a failure still
 means that it is the same actor incarnation, i.e. a restart is not visible for the
 consumer of the ``ActorRef``.
-
-Remote actor references acquired with ``actorFor`` do not include the full
-information about the underlying actor identity and therefore such references
-do not compare equal to references acquired with ``actorOf``, ``sender``,
-or ``context.self``. Because of this ``actorFor`` is deprecated in favor of
-``actorSelection``.
 
 If you need to keep track of actor references in a collection and do not care about
 the exact actor incarnation you can use the ``ActorPath`` as key, because the identifier
@@ -285,8 +268,8 @@ DeathWatch will publish its final transition and in general it is not expected
 to come back to life again (since the actor life cycle does not allow this).
 While it is possible to create an actor at a later time with an identical
 path—simply due to it being impossible to enforce the opposite without keeping
-the set of all actors ever created available—this is not good practice: remote
-actor references acquired with ``actorFor`` which “died” suddenly start to work
+the set of all actors ever created available—this is not good practice: 
+messages sent with ``actorSelection`` to an actor which “died” suddenly start to work
 again, but without any guarantee of ordering between this transition and any
 other event, hence the new inhabitant of the path may receive messages which were destined for the
 previous tenant.

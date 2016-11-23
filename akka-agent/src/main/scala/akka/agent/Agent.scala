@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.agent
@@ -119,13 +119,11 @@ object Agent {
  * // use result ...
  *
  * }}}
- * <br/>
  *
  * Agent is also monadic, which means that you can compose operations using
  * for-comprehensions. In monadic usage the original agents are not touched
  * but new agents are created. So the old values (agents) are still available
  * as-is. They are so-called 'persistent'.
- * <br/><br/>
  *
  * Example of monadic usage:
  * {{{

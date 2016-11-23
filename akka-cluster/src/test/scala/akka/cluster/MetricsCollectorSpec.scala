@@ -1,35 +1,31 @@
 /*
 
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster
 
+// TODO remove metrics
+
 import scala.language.postfixOps
 
-import scala.collection.immutable
 import scala.concurrent.duration._
-import scala.concurrent.Await
-import scala.util.{ Success, Try, Failure }
+import scala.util.{ Try }
 
 import akka.actor._
 import akka.testkit._
 import akka.cluster.StandardMetrics._
-import org.scalatest.WordSpec
-import org.scalatest.Matchers
 
 object MetricsEnabledSpec {
   val config = """
     akka.cluster.metrics.enabled = on
     akka.cluster.metrics.collect-interval = 1 s
     akka.cluster.metrics.gossip-interval = 1 s
-    akka.actor.provider = "akka.remote.RemoteActorRefProvider"
+    akka.actor.provider = remote
     """
 }
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class MetricsCollectorSpec extends AkkaSpec(MetricsEnabledSpec.config) with ImplicitSender with MetricsCollectorFactory {
-  import system.dispatcher
 
   val collector = createMetricsCollector
 
@@ -42,8 +38,8 @@ class MetricsCollectorSpec extends AkkaSpec(MetricsEnabledSpec.config) with Impl
         val merged12 = sample2 flatMap (latest ⇒ sample1 collect {
           case peer if latest sameAs peer ⇒
             val m = peer :+ latest
-            m.value should be(latest.value)
-            m.isSmooth should be(peer.isSmooth || latest.isSmooth)
+            m.value should ===(latest.value)
+            m.isSmooth should ===(peer.isSmooth || latest.isSmooth)
             m
         })
 
@@ -52,8 +48,8 @@ class MetricsCollectorSpec extends AkkaSpec(MetricsEnabledSpec.config) with Impl
         val merged34 = sample4 flatMap (latest ⇒ sample3 collect {
           case peer if latest sameAs peer ⇒
             val m = peer :+ latest
-            m.value should be(latest.value)
-            m.isSmooth should be(peer.isSmooth || latest.isSmooth)
+            m.value should ===(latest.value)
+            m.isSmooth should ===(peer.isSmooth || latest.isSmooth)
             m
         })
       }
@@ -93,9 +89,9 @@ class MetricsCollectorSpec extends AkkaSpec(MetricsEnabledSpec.config) with Impl
       // it's not present on all platforms
       val c = collector.asInstanceOf[JmxMetricsCollector]
       val heap = c.heapMemoryUsage
-      c.heapUsed(heap).isDefined should be(true)
-      c.heapCommitted(heap).isDefined should be(true)
-      c.processors.isDefined should be(true)
+      c.heapUsed(heap).isDefined should ===(true)
+      c.heapCommitted(heap).isDefined should ===(true)
+      c.processors.isDefined should ===(true)
     }
 
     "collect 50 node metrics samples in an acceptable duration" taggedAs LongRunningTest in within(10 seconds) {

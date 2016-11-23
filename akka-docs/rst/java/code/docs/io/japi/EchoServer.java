@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.io.japi;
@@ -28,7 +28,7 @@ public class EchoServer {
       watcher.tell(ackServer, ActorRef.noSender());
       latch.await(10, TimeUnit.MINUTES);
     } finally {
-      system.shutdown();
+      system.terminate();
     }
   }
 

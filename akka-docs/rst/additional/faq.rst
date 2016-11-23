@@ -25,6 +25,28 @@ Akka is also:
 * a town in Morocco
 * a near-earth asteroid
 
+Resources with Explicit Lifecycle
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Actors, ActorSystems, ActorMaterializers (for streams), all these types of objects bind
+resources that must be released explicitly. The reason is that Actors are meant to have
+a life of their own, existing independently of whether messages are currently en route
+to them. Therefore you should always make sure that for every creation of such an object
+you have a matching ``stop``, ``terminate``, or ``shutdown`` call implemented.
+
+In particular you typically want to bind such values to immutable references, i.e.
+``final ActorSystem system`` in Java or ``val system: ActorSystem`` in Scala.
+
+JVM application or Scala REPL “hanging”
+---------------------------------------
+
+Due to an ActorSystem’s explicit lifecycle the JVM will not exit until it is stopped.
+Therefore it is necessary to shutdown all ActorSystems within a running application or
+Scala REPL session in order to allow these processes to terminate.
+
+Shutting down an ActorSystem will properly terminate all Actors and ActorMaterializers
+that were created within it.
+
 Actors in General
 ^^^^^^^^^^^^^^^^^
 
@@ -51,7 +73,7 @@ mailboxes and thereby filling up the heap memory.
 Some articles for inspiration:
 
 * `Balancing Workload across Nodes with Akka 2 <http://letitcrash.com/post/29044669086/balancing-workload-across-nodes-with-akka-2>`_.
-* `Work Pulling Pattern to prevent mailbox overflow, throttle and distribute work <http://www.michaelpollmeier.com/akka-work-pulling-pattern/>`_
+* `Work Pulling Pattern to prevent mailbox overflow, throttle and distribute work <http://www.michaelpollmeier.com/akka-work-pulling-pattern>`_
 
 Actors Scala API
 ^^^^^^^^^^^^^^^^
@@ -111,7 +133,7 @@ Observe all the parts you need here:
 * ``system`` is the remote system’s name (must match exactly, case-sensitive!)
 
 * ``host`` is the remote system’s IP address or DNS name, and it must match that
-  system’s configuration (i.e. `akka.remote.netty.hostname`)
+  system’s configuration (i.e. `akka.remote.netty.tcp.hostname`)
 
 * ``1234`` is the port number on which the remote system is listening for
   connections and receiving messages
@@ -119,7 +141,7 @@ Observe all the parts you need here:
 * ``/user/my/actor/hierarchy/path`` is the absolute path of the remote actor in
   the remote system’s supervision hierarchy, including the system’s guardian
   (i.e. ``/user``, there are others e.g. ``/system`` which hosts loggers, ``/temp``
-  which keeps temporary actor refs used with `ask()`, `/remote` which enables
+  which keeps temporary actor refs used with :meth:`ask`, ``/remote`` which enables
   remote deployment, etc.); this matches how the actor prints its own ``self``
   reference on the remote host, e.g. in log output.
 
@@ -130,6 +152,14 @@ The most common reason is that the local system’s name (i.e. the
 ``system@host:1234`` part in the answer above) is not reachable from the remote
 system’s network location, e.g. because ``host`` was configured to be ``0.0.0.0``,
 ``localhost`` or a NAT’ed IP address.
+
+If you are running an ActorSystem under a NAT or inside a docker container, make sure to
+set `akka.remote.netty.tcp.hostname` and `akka.remote.netty.tcp.port` to the address
+it is reachable at from other ActorSystems. If you need to bind your network interface
+to a different address - use `akka.remote.netty.tcp.bind-hostname` and
+`akka.remote.netty.tcp.bind-port` settings. Also make sure your network is configured
+to translate from the address your ActorSystem is reachable at to the address your
+ActorSystem network interface is bound to.
 
 How reliable is the message delivery?
 -------------------------------------

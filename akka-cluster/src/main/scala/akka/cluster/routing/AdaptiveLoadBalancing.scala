@@ -1,14 +1,16 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.routing
+
+// TODO remove metrics
 
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.annotation.tailrec
 import scala.collection.immutable
-import scala.concurrent.forkjoin.ThreadLocalRandom
+import java.util.concurrent.ThreadLocalRandom
 
 import com.typesafe.config.Config
 
@@ -40,6 +42,7 @@ import akka.routing._
  * @param metricsSelector decides what probability to use for selecting a routee, based
  *   on remaining capacity as indicated by the node metrics
  */
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 final case class AdaptiveLoadBalancingRoutingLogic(system: ActorSystem, metricsSelector: MetricsSelector = MixMetricsSelector)
   extends RoutingLogic with NoSerializationVerificationNeeded {
 
@@ -126,16 +129,18 @@ final case class AdaptiveLoadBalancingRoutingLogic(system: ActorSystem, metricsS
  *   supervision, death watch and router management messages
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 final case class AdaptiveLoadBalancingPool(
-  metricsSelector: MetricsSelector = MixMetricsSelector,
-  override val nrOfInstances: Int = 0,
+  metricsSelector:                 MetricsSelector    = MixMetricsSelector,
+  override val nrOfInstances:      Int                = 0,
   override val supervisorStrategy: SupervisorStrategy = Pool.defaultSupervisorStrategy,
-  override val routerDispatcher: String = Dispatchers.DefaultDispatcherId,
-  override val usePoolDispatcher: Boolean = false)
+  override val routerDispatcher:   String             = Dispatchers.DefaultDispatcherId,
+  override val usePoolDispatcher:  Boolean            = false)
   extends Pool {
 
   def this(config: Config, dynamicAccess: DynamicAccess) =
-    this(nrOfInstances = config.getInt("nr-of-instances"),
+    this(
+      nrOfInstances = ClusterRouterSettingsBase.getMaxTotalNrOfInstances(config),
       metricsSelector = MetricsSelector.fromConfig(config, dynamicAccess),
       usePoolDispatcher = config.hasPath("pool-dispatcher"))
 
@@ -149,11 +154,14 @@ final case class AdaptiveLoadBalancingPool(
 
   override def resizer: Option[Resizer] = None
 
+  override def nrOfInstances(sys: ActorSystem) = this.nrOfInstances
+
   override def createRouter(system: ActorSystem): Router =
     new Router(AdaptiveLoadBalancingRoutingLogic(system, metricsSelector))
 
   override def routingLogicController(routingLogic: RoutingLogic): Option[Props] =
-    Some(Props(classOf[AdaptiveLoadBalancingMetricsListener],
+    Some(Props(
+      classOf[AdaptiveLoadBalancingMetricsListener],
       routingLogic.asInstanceOf[AdaptiveLoadBalancingRoutingLogic]))
 
   /**
@@ -168,7 +176,7 @@ final case class AdaptiveLoadBalancingPool(
   def withDispatcher(dispatcherId: String): AdaptiveLoadBalancingPool = copy(routerDispatcher = dispatcherId)
 
   /**
-   * Uses the supervisor strategy of the given Routerconfig
+   * Uses the supervisor strategy of the given RouterConfig
    * if this RouterConfig doesn't have one
    */
   override def withFallback(other: RouterConfig): RouterConfig =
@@ -204,14 +212,16 @@ final case class AdaptiveLoadBalancingPool(
  *   router management messages
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 final case class AdaptiveLoadBalancingGroup(
-  metricsSelector: MetricsSelector = MixMetricsSelector,
-  paths: immutable.Iterable[String] = Nil,
-  override val routerDispatcher: String = Dispatchers.DefaultDispatcherId)
+  metricsSelector:               MetricsSelector            = MixMetricsSelector,
+  override val paths:            immutable.Iterable[String] = Nil,
+  override val routerDispatcher: String                     = Dispatchers.DefaultDispatcherId)
   extends Group {
 
   def this(config: Config, dynamicAccess: DynamicAccess) =
-    this(metricsSelector = MetricsSelector.fromConfig(config, dynamicAccess),
+    this(
+      metricsSelector = MetricsSelector.fromConfig(config, dynamicAccess),
       paths = immutableSeq(config.getStringList("routees.paths")))
 
   /**
@@ -221,14 +231,18 @@ final case class AdaptiveLoadBalancingGroup(
    * @param routeesPaths string representation of the actor paths of the routees, messages are
    *   sent with [[akka.actor.ActorSelection]] to these paths
    */
-  def this(metricsSelector: MetricsSelector,
-           routeesPaths: java.lang.Iterable[String]) = this(paths = immutableSeq(routeesPaths))
+  def this(
+    metricsSelector: MetricsSelector,
+    routeesPaths:    java.lang.Iterable[String]) = this(paths = immutableSeq(routeesPaths))
+
+  override def paths(system: ActorSystem): immutable.Iterable[String] = this.paths
 
   override def createRouter(system: ActorSystem): Router =
     new Router(AdaptiveLoadBalancingRoutingLogic(system, metricsSelector))
 
   override def routingLogicController(routingLogic: RoutingLogic): Option[Props] =
-    Some(Props(classOf[AdaptiveLoadBalancingMetricsListener],
+    Some(Props(
+      classOf[AdaptiveLoadBalancingMetricsListener],
       routingLogic.asInstanceOf[AdaptiveLoadBalancingRoutingLogic]))
 
   /**
@@ -244,6 +258,7 @@ final case class AdaptiveLoadBalancingGroup(
  * Low heap capacity => small weight.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 case object HeapMetricsSelector extends CapacityMetricsSelector {
   /**
    * Java API: get the singleton instance
@@ -268,6 +283,7 @@ case object HeapMetricsSelector extends CapacityMetricsSelector {
  * Low cpu capacity => small weight.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 case object CpuMetricsSelector extends CapacityMetricsSelector {
   /**
    * Java API: get the singleton instance
@@ -291,6 +307,7 @@ case object CpuMetricsSelector extends CapacityMetricsSelector {
  * Low load average capacity => small weight.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 case object SystemLoadAverageMetricsSelector extends CapacityMetricsSelector {
   /**
    * Java API: get the singleton instance
@@ -311,6 +328,7 @@ case object SystemLoadAverageMetricsSelector extends CapacityMetricsSelector {
  * [akka.cluster.routing.CpuMetricsSelector], and [akka.cluster.routing.SystemLoadAverageMetricsSelector]
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 object MixMetricsSelector extends MixMetricsSelectorBase(
   Vector(HeapMetricsSelector, CpuMetricsSelector, SystemLoadAverageMetricsSelector)) {
 
@@ -326,6 +344,7 @@ object MixMetricsSelector extends MixMetricsSelectorBase(
  * [akka.cluster.routing.CpuMetricsSelector], and [akka.cluster.routing.SystemLoadAverageMetricsSelector]
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 final case class MixMetricsSelector(
   selectors: immutable.IndexedSeq[CapacityMetricsSelector])
   extends MixMetricsSelectorBase(selectors)
@@ -334,6 +353,7 @@ final case class MixMetricsSelector(
  * Base class for MetricsSelector that combines other selectors and aggregates their capacity.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 abstract class MixMetricsSelectorBase(selectors: immutable.IndexedSeq[CapacityMetricsSelector])
   extends CapacityMetricsSelector {
 
@@ -348,14 +368,15 @@ abstract class MixMetricsSelectorBase(selectors: immutable.IndexedSeq[CapacityMe
     combined.foldLeft(Map.empty[Address, (Double, Int)].withDefaultValue((0.0, 0))) {
       case (acc, (address, capacity)) ⇒
         val (sum, count) = acc(address)
-        acc + (address -> ((sum + capacity, count + 1)))
+        acc + (address → ((sum + capacity, count + 1)))
     }.map {
-      case (addr, (sum, count)) ⇒ (addr -> sum / count)
+      case (addr, (sum, count)) ⇒ addr → (sum / count)
     }
   }
 
 }
 
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 object MetricsSelector {
   def fromConfig(config: Config, dynamicAccess: DynamicAccess) =
     config.getString("metrics-selector") match {
@@ -364,7 +385,7 @@ object MetricsSelector {
       case "cpu"  ⇒ CpuMetricsSelector
       case "load" ⇒ SystemLoadAverageMetricsSelector
       case fqn ⇒
-        val args = List(classOf[Config] -> config)
+        val args = List(classOf[Config] → config)
         dynamicAccess.createInstanceFor[MetricsSelector](fqn, args).recover({
           case exception ⇒ throw new IllegalArgumentException(
             (s"Cannot instantiate metrics-selector [$fqn], " +
@@ -378,9 +399,10 @@ object MetricsSelector {
  * A MetricsSelector is responsible for producing weights from the node metrics.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 trait MetricsSelector extends Serializable {
   /**
-   * The weights per address, based on the the nodeMetrics.
+   * The weights per address, based on the nodeMetrics.
    */
   def weights(nodeMetrics: Set[NodeMetrics]): Map[Address, Int]
 }
@@ -390,6 +412,7 @@ trait MetricsSelector extends Serializable {
  * The weights are typically proportional to the remaining capacity.
  */
 @SerialVersionUID(1L)
+@deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
 abstract class CapacityMetricsSelector extends MetricsSelector {
 
   /**
@@ -412,7 +435,7 @@ abstract class CapacityMetricsSelector extends MetricsSelector {
       val (_, min) = capacity.minBy { case (_, c) ⇒ c }
       // lowest usable capacity is 1% (>= 0.5% will be rounded to weight 1), also avoids div by zero
       val divisor = math.max(0.01, min)
-      capacity map { case (addr, c) ⇒ (addr -> math.round((c) / divisor).toInt) }
+      capacity map { case (addr, c) ⇒ (addr → math.round((c) / divisor).toInt) }
     }
   }
 

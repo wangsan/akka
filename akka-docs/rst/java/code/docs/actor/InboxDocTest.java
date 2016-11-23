@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.actor;
@@ -7,6 +7,7 @@ package docs.actor;
 import java.util.concurrent.TimeUnit;
 
 import akka.testkit.AkkaJUnitActorSystemResource;
+import docs.AbstractJavaTest;
 import org.junit.ClassRule;
 import org.junit.Test;
 
@@ -19,7 +20,7 @@ import akka.actor.Terminated;
 import akka.testkit.AkkaSpec;
 import akka.testkit.JavaTestKit;
 
-public class InboxDocTest {
+public class InboxDocTest extends AbstractJavaTest {
 
   @ClassRule
   public static AkkaJUnitActorSystemResource actorSystemResource =
@@ -38,7 +39,11 @@ public class InboxDocTest {
     probe.expectMsgEquals("hello");
     probe.send(probe.getLastSender(), "world");
     //#inbox
-    assert inbox.receive(Duration.create(1, TimeUnit.SECONDS)).equals("world");
+    try {
+      assert inbox.receive(Duration.create(1, TimeUnit.SECONDS)).equals("world");
+    } catch (java.util.concurrent.TimeoutException e) {
+      // timeout
+    }
     //#inbox
   }
   
@@ -50,7 +55,11 @@ public class InboxDocTest {
     final Inbox inbox = Inbox.create(system);
     inbox.watch(target);
     target.tell(PoisonPill.getInstance(), ActorRef.noSender());
-    assert inbox.receive(Duration.create(1, TimeUnit.SECONDS)) instanceof Terminated;
+    try {
+      assert inbox.receive(Duration.create(1, TimeUnit.SECONDS)) instanceof Terminated;
+    } catch (java.util.concurrent.TimeoutException e) {
+      // timeout
+    }
     //#watch
   }
 

@@ -1,13 +1,12 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
 import language.existentials
-import language.postfixOps
 import scala.collection.immutable
 import scala.concurrent.duration._
-import scala.concurrent.forkjoin.ThreadLocalRandom
+import java.util.concurrent.ThreadLocalRandom
 import scala.util.control.NonFatal
 import akka.actor._
 import akka.actor.SupervisorStrategy.Stop
@@ -16,6 +15,8 @@ import akka.cluster.ClusterEvent._
 import akka.dispatch.{ UnboundedMessageQueueSemantics, RequiresMessageQueue }
 import scala.collection.breakOut
 import akka.remote.QuarantinedEvent
+import java.util.ArrayList
+import java.util.Collections
 
 /**
  * Base trait for all cluster messages. All ClusterMessage's are serializable.
@@ -58,6 +59,7 @@ private[cluster] object InternalClusterAction {
 
   /**
    * Command to join the cluster. Sent when a node wants to join another node (the receiver).
+   *
    * @param node the node that wants to join the cluster
    */
   @SerialVersionUID(1L)
@@ -65,6 +67,7 @@ private[cluster] object InternalClusterAction {
 
   /**
    * Reply to Join
+   *
    * @param from the sender node in the cluster, i.e. the node that received the Join command
    */
   @SerialVersionUID(1L)
@@ -84,25 +87,25 @@ private[cluster] object InternalClusterAction {
    * If a node is uninitialized it will reply to `InitJoin` with
    * `InitJoinNack`.
    */
-  case object JoinSeedNode
+  case object JoinSeedNode extends DeadLetterSuppression
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
-  case object InitJoin extends ClusterMessage
+  case object InitJoin extends ClusterMessage with DeadLetterSuppression
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
-  final case class InitJoinAck(address: Address) extends ClusterMessage
+  final case class InitJoinAck(address: Address) extends ClusterMessage with DeadLetterSuppression
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
-  final case class InitJoinNack(address: Address) extends ClusterMessage
+  final case class InitJoinNack(address: Address) extends ClusterMessage with DeadLetterSuppression
 
   /**
    * Marker interface for periodic tick messages
@@ -128,10 +131,12 @@ private[cluster] object InternalClusterAction {
   final case class PublisherCreated(publisher: ActorRef)
 
   /**
-   * Comand to [[akka.cluster.ClusterDaemon]] to create a
-   * [[akka.cluster.OnMemberUpListener]].
+   * Command to [[akka.cluster.ClusterDaemon]] to create a
+   * [[akka.cluster.OnMemberStatusChangedListener]].
    */
   final case class AddOnMemberUpListener(callback: Runnable) extends NoSerializationVerificationNeeded
+
+  final case class AddOnMemberRemovedListener(callback: Runnable) extends NoSerializationVerificationNeeded
 
   sealed trait SubscriptionMessage
   final case class Subscribe(subscriber: ActorRef, initialStateMode: SubscriptionInitialStateMode, to: Set[Class[_]]) extends SubscriptionMessage
@@ -154,18 +159,28 @@ private[cluster] object InternalClusterAction {
 private[cluster] final class ClusterDaemon(settings: ClusterSettings) extends Actor with ActorLogging
   with RequiresMessageQueue[UnboundedMessageQueueSemantics] {
   import InternalClusterAction._
-  // Important - don't use Cluster(context.system) here because that would
+  // Important - don't use Cluster(context.system) in constructor because that would
   // cause deadlock. The Cluster extension is currently being created and is waiting
   // for response from GetClusterCoreRef in its constructor.
-  val coreSupervisor = context.actorOf(Props[ClusterCoreSupervisor].
-    withDispatcher(context.props.dispatcher), name = "core")
-  context.actorOf(Props[ClusterHeartbeatReceiver].
-    withDispatcher(context.props.dispatcher), name = "heartbeatReceiver")
+  // Child actors are therefore created when GetClusterCoreRef is received
+  var coreSupervisor: Option[ActorRef] = None
+
+  def createChildren(): Unit = {
+    coreSupervisor = Some(context.actorOf(Props[ClusterCoreSupervisor].
+      withDispatcher(context.props.dispatcher), name = "core"))
+    context.actorOf(Props[ClusterHeartbeatReceiver].
+      withDispatcher(context.props.dispatcher), name = "heartbeatReceiver")
+  }
 
   def receive = {
-    case msg @ GetClusterCoreRef ⇒ coreSupervisor forward msg
+    case msg: GetClusterCoreRef.type ⇒
+      if (coreSupervisor.isEmpty)
+        createChildren()
+      coreSupervisor.foreach(_ forward msg)
     case AddOnMemberUpListener(code) ⇒
-      context.actorOf(Props(classOf[OnMemberUpListener], code).withDeploy(Deploy.local))
+      context.actorOf(Props(classOf[OnMemberStatusChangedListener], code, Up).withDeploy(Deploy.local))
+    case AddOnMemberRemovedListener(code) ⇒
+      context.actorOf(Props(classOf[OnMemberStatusChangedListener], code, Removed).withDeploy(Deploy.local))
     case PublisherCreated(publisher) ⇒
       if (settings.MetricsEnabled) {
         // metrics must be started after core/publisher to be able
@@ -187,12 +202,20 @@ private[cluster] final class ClusterCoreSupervisor extends Actor with ActorLoggi
   with RequiresMessageQueue[UnboundedMessageQueueSemantics] {
   import InternalClusterAction._
 
-  val publisher = context.actorOf(Props[ClusterDomainEventPublisher].
-    withDispatcher(context.props.dispatcher), name = "publisher")
-  val coreDaemon = context.watch(context.actorOf(Props(classOf[ClusterCoreDaemon], publisher).
-    withDispatcher(context.props.dispatcher), name = "daemon"))
+  // Important - don't use Cluster(context.system) in constructor because that would
+  // cause deadlock. The Cluster extension is currently being created and is waiting
+  // for response from GetClusterCoreRef in its constructor.
+  // Child actors are therefore created when GetClusterCoreRef is received
 
-  context.parent ! PublisherCreated(publisher)
+  var coreDaemon: Option[ActorRef] = None
+
+  def createChildren(): Unit = {
+    val publisher = context.actorOf(Props[ClusterDomainEventPublisher].
+      withDispatcher(context.props.dispatcher), name = "publisher")
+    coreDaemon = Some(context.watch(context.actorOf(Props(classOf[ClusterCoreDaemon], publisher).
+      withDispatcher(context.props.dispatcher), name = "daemon")))
+    context.parent ! PublisherCreated(publisher)
+  }
 
   override val supervisorStrategy =
     OneForOneStrategy() {
@@ -205,7 +228,10 @@ private[cluster] final class ClusterCoreSupervisor extends Actor with ActorLoggi
   override def postStop(): Unit = Cluster(context.system).shutdown()
 
   def receive = {
-    case InternalClusterAction.GetClusterCoreRef ⇒ sender() ! coreDaemon
+    case InternalClusterAction.GetClusterCoreRef ⇒
+      if (coreDaemon.isEmpty)
+        createChildren()
+      coreDaemon.foreach(sender() ! _)
   }
 }
 
@@ -217,15 +243,16 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   import InternalClusterAction._
 
   val cluster = Cluster(context.system)
-  import cluster.{ selfAddress, scheduler, failureDetector }
+  import cluster.{ selfAddress, selfRoles, scheduler, failureDetector }
   import cluster.settings._
   import cluster.InfoLogger._
 
   protected def selfUniqueAddress = cluster.selfUniqueAddress
 
-  val NumberOfGossipsBeforeShutdownWhenLeaderExits = 3
+  val NumberOfGossipsBeforeShutdownWhenLeaderExits = 5
+  val MaxGossipsBeforeShuttingDownMyself = 5
 
-  def vclockName(node: UniqueAddress): String = node.address + "-" + node.uid
+  def vclockName(node: UniqueAddress): String = s"${node.address}-${node.longUid}"
   val vclockNode = VectorClock.Node(vclockName(selfUniqueAddress))
 
   // note that self is not initially member,
@@ -235,8 +262,10 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   val statsEnabled = PublishStatsInterval.isFinite
   var gossipStats = GossipStats()
 
+  var seedNodes = SeedNodes
   var seedNodeProcess: Option[ActorRef] = None
-  var seedNodeProcessCounter = 0 // for unique names 
+  var seedNodeProcessCounter = 0 // for unique names
+  var leaderActionCounter = 0
 
   /**
    * Looks up and returns the remote cluster command connection for the specific address.
@@ -247,15 +276,18 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   import context.dispatcher
 
   // start periodic gossip to random nodes in cluster
-  val gossipTask = scheduler.schedule(PeriodicTasksInitialDelay.max(GossipInterval),
+  val gossipTask = scheduler.schedule(
+    PeriodicTasksInitialDelay.max(GossipInterval),
     GossipInterval, self, GossipTick)
 
   // start periodic cluster failure detector reaping (moving nodes condemned by the failure detector to unreachable list)
-  val failureDetectorReaperTask = scheduler.schedule(PeriodicTasksInitialDelay.max(UnreachableNodesReaperInterval),
+  val failureDetectorReaperTask = scheduler.schedule(
+    PeriodicTasksInitialDelay.max(UnreachableNodesReaperInterval),
     UnreachableNodesReaperInterval, self, ReapUnreachableTick)
 
   // start periodic leader action management (only applies for the current leader)
-  val leaderActionsTask = scheduler.schedule(PeriodicTasksInitialDelay.max(LeaderActionsInterval),
+  val leaderActionsTask = scheduler.schedule(
+    PeriodicTasksInitialDelay.max(LeaderActionsInterval),
     LeaderActionsInterval, self, LeaderActionsTick)
 
   // start periodic publish of current stats
@@ -268,16 +300,18 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   override def preStart(): Unit = {
     context.system.eventStream.subscribe(self, classOf[QuarantinedEvent])
 
-    AutoDownUnreachableAfter match {
-      case d: FiniteDuration ⇒
-        context.actorOf(AutoDown.props(d) withDispatcher (context.props.dispatcher), name = "autoDown")
-      case _ ⇒ // auto-down is disabled
+    cluster.downingProvider.downingActorProps.foreach { props ⇒
+      val propsWithDispatcher =
+        if (props.dispatcher == Deploy.NoDispatcherGiven) props.withDispatcher(context.props.dispatcher)
+        else props
+
+      context.actorOf(propsWithDispatcher, name = "downingProvider")
     }
 
-    if (SeedNodes.isEmpty)
+    if (seedNodes.isEmpty)
       logInfo("No seed-nodes configured, manual cluster join required")
     else
-      self ! JoinSeedNodes(SeedNodes)
+      self ! JoinSeedNodes(seedNodes)
   }
 
   override def postStop(): Unit = {
@@ -291,7 +325,7 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   def uninitialized: Actor.Receive = {
     case InitJoin                          ⇒ sender() ! InitJoinNack(selfAddress)
     case ClusterUserAction.JoinTo(address) ⇒ join(address)
-    case JoinSeedNodes(seedNodes)          ⇒ joinSeedNodes(seedNodes)
+    case JoinSeedNodes(newSeedNodes)       ⇒ joinSeedNodes(newSeedNodes)
     case msg: SubscriptionMessage          ⇒ publisher forward msg
   }
 
@@ -301,14 +335,15 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     case ClusterUserAction.JoinTo(address) ⇒
       becomeUninitialized()
       join(address)
-    case JoinSeedNodes(seedNodes) ⇒
+    case JoinSeedNodes(newSeedNodes) ⇒
       becomeUninitialized()
-      joinSeedNodes(seedNodes)
+      joinSeedNodes(newSeedNodes)
     case msg: SubscriptionMessage ⇒ publisher forward msg
     case _: Tick ⇒
       if (deadline.exists(_.isOverdue)) {
+        // join attempt failed, retry
         becomeUninitialized()
-        if (SeedNodes.nonEmpty) joinSeedNodes(SeedNodes)
+        if (seedNodes.nonEmpty) joinSeedNodes(seedNodes)
         else join(joinWith)
       }
   }
@@ -347,7 +382,8 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     case ClusterUserAction.JoinTo(address) ⇒
       logInfo("Trying to join [{}] when already part of a cluster, ignoring", address)
     case JoinSeedNodes(seedNodes) ⇒
-      logInfo("Trying to join seed nodes [{}] when already part of a cluster, ignoring",
+      logInfo(
+        "Trying to join seed nodes [{}] when already part of a cluster, ignoring",
         seedNodes.mkString(", "))
   }
 
@@ -364,23 +400,31 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     case other             ⇒ super.unhandled(other)
   }
 
-  def initJoin(): Unit = sender() ! InitJoinAck(selfAddress)
+  def initJoin(): Unit = {
+    val selfStatus = latestGossip.member(selfUniqueAddress).status
+    if (Gossip.removeUnreachableWithMemberStatus.contains(selfStatus))
+      // prevents a Down and Exiting node from being used for joining
+      sender() ! InitJoinNack(selfAddress)
+    else
+      sender() ! InitJoinAck(selfAddress)
+  }
 
-  def joinSeedNodes(seedNodes: immutable.IndexedSeq[Address]): Unit = {
-    if (seedNodes.nonEmpty) {
+  def joinSeedNodes(newSeedNodes: immutable.IndexedSeq[Address]): Unit = {
+    if (newSeedNodes.nonEmpty) {
       stopSeedNodeProcess()
+      seedNodes = newSeedNodes // keep them for retry
       seedNodeProcess =
-        if (seedNodes == immutable.IndexedSeq(selfAddress)) {
+        if (newSeedNodes == immutable.IndexedSeq(selfAddress)) {
           self ! ClusterUserAction.JoinTo(selfAddress)
           None
         } else {
           // use unique name of this actor, stopSeedNodeProcess doesn't wait for termination
           seedNodeProcessCounter += 1
-          if (seedNodes.head == selfAddress) {
-            Some(context.actorOf(Props(classOf[FirstSeedNodeProcess], seedNodes).
+          if (newSeedNodes.head == selfAddress) {
+            Some(context.actorOf(Props(classOf[FirstSeedNodeProcess], newSeedNodes).
               withDispatcher(UseDispatcher), name = "firstSeedNodeProcess-" + seedNodeProcessCounter))
           } else {
-            Some(context.actorOf(Props(classOf[JoinSeedNodeProcess], seedNodes).
+            Some(context.actorOf(Props(classOf[JoinSeedNodeProcess], newSeedNodes).
               withDispatcher(UseDispatcher), name = "joinSeedNodeProcess-" + seedNodeProcessCounter))
           }
         }
@@ -395,10 +439,12 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
    */
   def join(address: Address): Unit = {
     if (address.protocol != selfAddress.protocol)
-      log.warning("Trying to join member with wrong protocol, but was ignored, expected [{}] but was [{}]",
+      log.warning(
+        "Trying to join member with wrong protocol, but was ignored, expected [{}] but was [{}]",
         selfAddress.protocol, address.protocol)
     else if (address.system != selfAddress.system)
-      log.warning("Trying to join member with wrong ActorSystem name, but was ignored, expected [{}] but was [{}]",
+      log.warning(
+        "Trying to join member with wrong ActorSystem name, but was ignored, expected [{}] but was [{}]",
         selfAddress.system, address.system)
     else {
       require(latestGossip.members.isEmpty, "Join can only be done from empty state")
@@ -436,42 +482,62 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
    * current gossip state, including the new joining member.
    */
   def joining(node: UniqueAddress, roles: Set[String]): Unit = {
+    val selfStatus = latestGossip.member(selfUniqueAddress).status
     if (node.address.protocol != selfAddress.protocol)
-      log.warning("Member with wrong protocol tried to join, but was ignored, expected [{}] but was [{}]",
+      log.warning(
+        "Member with wrong protocol tried to join, but was ignored, expected [{}] but was [{}]",
         selfAddress.protocol, node.address.protocol)
     else if (node.address.system != selfAddress.system)
-      log.warning("Member with wrong ActorSystem name tried to join, but was ignored, expected [{}] but was [{}]",
+      log.warning(
+        "Member with wrong ActorSystem name tried to join, but was ignored, expected [{}] but was [{}]",
         selfAddress.system, node.address.system)
+    else if (Gossip.removeUnreachableWithMemberStatus.contains(selfStatus))
+      logInfo("Trying to join [{}] to [{}] member, ignoring. Use a member that is Up instead.", node, selfStatus)
     else {
       val localMembers = latestGossip.members
 
       // check by address without uid to make sure that node with same host:port is not allowed
       // to join until previous node with that host:port has been removed from the cluster
-      val alreadyMember = localMembers.exists(_.address == node.address)
-      val isUnreachable = !latestGossip.overview.reachability.isReachable(node)
+      localMembers.find(_.address == node.address) match {
+        case Some(m) if m.uniqueAddress == node ⇒
+          // node retried join attempt, probably due to lost Welcome message
+          logInfo("Existing member [{}] is joining again.", m)
+          if (node != selfUniqueAddress)
+            sender() ! Welcome(selfUniqueAddress, latestGossip)
+        case Some(m) ⇒
+          // node restarted, same host:port as existing member, but with different uid
+          // safe to down and later remove existing member
+          // new node will retry join
+          logInfo("New incarnation of existing member [{}] is trying to join. " +
+            "Existing will be removed from the cluster and then new member will be allowed to join.", m)
+          if (m.status != Down) {
+            // we can confirm it as terminated/unreachable immediately
+            val newReachability = latestGossip.overview.reachability.terminated(selfUniqueAddress, m.uniqueAddress)
+            val newOverview = latestGossip.overview.copy(reachability = newReachability)
+            val newGossip = latestGossip.copy(overview = newOverview)
+            updateLatestGossip(newGossip)
 
-      if (alreadyMember)
-        logInfo("Existing member [{}] is trying to join, ignoring", node)
-      else if (isUnreachable)
-        logInfo("Unreachable member [{}] is trying to join, ignoring", node)
-      else {
+            downing(m.address)
+          }
+        case None ⇒
+          // remove the node from the failure detector
+          failureDetector.remove(node.address)
 
-        // remove the node from the failure detector
-        failureDetector.remove(node.address)
+          // add joining node as Joining
+          // add self in case someone else joins before self has joined (Set discards duplicates)
+          val newMembers = localMembers + Member(node, roles) + Member(selfUniqueAddress, cluster.selfRoles)
+          val newGossip = latestGossip copy (members = newMembers)
 
-        // add joining node as Joining
-        // add self in case someone else joins before self has joined (Set discards duplicates)
-        val newMembers = localMembers + Member(node, roles) + Member(selfUniqueAddress, cluster.selfRoles)
-        val newGossip = latestGossip copy (members = newMembers)
+          updateLatestGossip(newGossip)
 
-        updateLatestGossip(newGossip)
+          logInfo("Node [{}] is JOINING, roles [{}]", node.address, roles.mkString(", "))
+          if (node == selfUniqueAddress) {
+            if (localMembers.isEmpty)
+              leaderActions() // important for deterministic oldest when bootstrapping
+          } else
+            sender() ! Welcome(selfUniqueAddress, latestGossip)
 
-        logInfo("Node [{}] is JOINING, roles [{}]", node.address, roles.mkString(", "))
-        if (node != selfUniqueAddress) {
-          sender() ! Welcome(selfUniqueAddress, latestGossip)
-        }
-
-        publish(latestGossip)
+          publish(latestGossip)
       }
     }
   }
@@ -486,6 +552,7 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     else {
       logInfo("Welcome from [{}]", from.address)
       latestGossip = gossip seen selfUniqueAddress
+      assertLatestGossip()
       publish(latestGossip)
       if (from != selfUniqueAddress)
         gossipTo(from, sender())
@@ -508,6 +575,8 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
       logInfo("Marked address [{}] as [{}]", address, Leaving)
       publish(latestGossip)
+      // immediate gossip to speed up the leaving process
+      gossip()
     }
   }
 
@@ -531,15 +600,15 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     val localReachability = localOverview.reachability
 
     // check if the node to DOWN is in the `members` set
-    localMembers.collectFirst { case m if m.address == address ⇒ m.copy(status = Down) } match {
-      case Some(m) ⇒
+    localMembers.find(_.address == address) match {
+      case Some(m) if (m.status != Down) ⇒
         if (localReachability.isReachable(m.uniqueAddress))
           logInfo("Marking node [{}] as [{}]", m.address, Down)
         else
           logInfo("Marking unreachable node [{}] as [{}]", m.address, Down)
 
         // replace member (changed status)
-        val newMembers = localMembers - m + m
+        val newMembers = localMembers - m + m.copy(status = Down)
         // remove nodes marked as DOWN from the `seen` table
         val newSeen = localSeen - m.uniqueAddress
 
@@ -549,8 +618,9 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
         updateLatestGossip(newGossip)
 
         publish(latestGossip)
+      case Some(_) ⇒ // already down
       case None ⇒
-        logInfo("Ignoring down of unknown node [{}] as [{}]", address)
+        logInfo("Ignoring down of unknown node [{}]", address)
     }
 
   }
@@ -562,8 +632,9 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
       val newOverview = localGossip.overview copy (reachability = newReachability)
       val newGossip = localGossip copy (overview = newOverview)
       updateLatestGossip(newGossip)
-      log.warning("Cluster Node [{}] - Marking node as TERMINATED [{}], due to quarantine",
-        selfAddress, node.address)
+      log.warning(
+        "Cluster Node [{}] - Marking node as TERMINATED [{}], due to quarantine. Node roles [{}]",
+        selfAddress, node.address, selfRoles.mkString(","))
       publish(latestGossip)
       downing(node.address)
     }
@@ -608,9 +679,6 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     } else if (envelope.to != selfUniqueAddress) {
       logInfo("Ignoring received gossip intended for someone else, from [{}] to [{}]", from.address, envelope.to)
       Ignored
-    } else if (!remoteGossip.overview.reachability.isReachable(selfUniqueAddress)) {
-      logInfo("Ignoring received gossip with myself as unreachable, from [{}]", from.address)
-      Ignored
     } else if (!localGossip.overview.reachability.isReachable(selfUniqueAddress, from)) {
       logInfo("Ignoring received gossip from unreachable [{}] ", from)
       Ignored
@@ -635,10 +703,30 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
           (remoteGossip, !remoteGossip.seenByNode(selfUniqueAddress), Newer)
         case _ ⇒
           // conflicting versions, merge
-          (remoteGossip merge localGossip, true, Merge)
+          // We can see that a removal was done when it is not in one of the gossips has status
+          // Down or Exiting in the other gossip.
+          // Perform the same pruning (clear of VectorClock) as the leader did when removing a member.
+          // Removal of member itself is handled in merge (pickHighestPriority)
+          val prunedLocalGossip = localGossip.members.foldLeft(localGossip) { (g, m) ⇒
+            if (Gossip.removeUnreachableWithMemberStatus(m.status) && !remoteGossip.members.contains(m)) {
+              log.debug("Cluster Node [{}] - Pruned conflicting local gossip: {}", selfAddress, m)
+              g.prune(VectorClock.Node(vclockName(m.uniqueAddress)))
+            } else
+              g
+          }
+          val prunedRemoteGossip = remoteGossip.members.foldLeft(remoteGossip) { (g, m) ⇒
+            if (Gossip.removeUnreachableWithMemberStatus(m.status) && !localGossip.members.contains(m)) {
+              log.debug("Cluster Node [{}] - Pruned conflicting remote gossip: {}", selfAddress, m)
+              g.prune(VectorClock.Node(vclockName(m.uniqueAddress)))
+            } else
+              g
+          }
+
+          (prunedRemoteGossip merge prunedLocalGossip, true, Merge)
       }
 
       latestGossip = winningGossip seen selfUniqueAddress
+      assertLatestGossip()
 
       // for all new joining nodes we remove them from the failure detector
       latestGossip.members foreach {
@@ -655,17 +743,18 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
       if (statsEnabled) {
         gossipStats = gossipType match {
-          case Merge ⇒ gossipStats.incrementMergeCount
-          case Same  ⇒ gossipStats.incrementSameCount
-          case Newer ⇒ gossipStats.incrementNewerCount
-          case Older ⇒ gossipStats.incrementOlderCount
+          case Merge   ⇒ gossipStats.incrementMergeCount
+          case Same    ⇒ gossipStats.incrementSameCount
+          case Newer   ⇒ gossipStats.incrementNewerCount
+          case Older   ⇒ gossipStats.incrementOlderCount
+          case Ignored ⇒ gossipStats // included in receivedGossipCount
         }
       }
 
       publish(latestGossip)
 
       val selfStatus = latestGossip.member(selfUniqueAddress).status
-      if (selfStatus == Exiting || selfStatus == Down)
+      if (selfStatus == Exiting)
         shutdown()
       else if (talkback) {
         // send back gossip to sender() when sender() had different view, i.e. merge, or sender() had
@@ -689,6 +778,32 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
   def isGossipSpeedupNeeded: Boolean =
     (latestGossip.overview.seen.size < latestGossip.members.size / 2)
+
+  /**
+   * Sends full gossip to `n` other random members.
+   */
+  def gossipRandomN(n: Int): Unit = {
+    if (!isSingletonCluster && n > 0) {
+      val localGossip = latestGossip
+      // using ArrayList to be able to shuffle
+      val possibleTargets = new ArrayList[UniqueAddress](localGossip.members.size)
+      localGossip.members.foreach { m ⇒
+        if (validNodeForGossip(m.uniqueAddress))
+          possibleTargets.add(m.uniqueAddress)
+      }
+      val randomTargets =
+        if (possibleTargets.size <= n)
+          possibleTargets
+        else {
+          Collections.shuffle(possibleTargets, ThreadLocalRandom.current())
+          possibleTargets.subList(0, n)
+        }
+
+      val iter = randomTargets.iterator
+      while (iter.hasNext)
+        gossipTo(iter.next())
+    }
+  }
 
   /**
    * Initiates a new round of gossip.
@@ -755,18 +870,61 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   /**
    * Runs periodic leader actions, such as member status transitions, assigning partitions etc.
    */
-  def leaderActions(): Unit =
-    if (latestGossip.isLeader(selfUniqueAddress)) {
+  def leaderActions(): Unit = {
+    if (latestGossip.isLeader(selfUniqueAddress, selfUniqueAddress)) {
       // only run the leader actions if we are the LEADER
-      if (latestGossip.convergence)
+      val firstNotice = 20
+      val periodicNotice = 60
+      if (latestGossip.convergence(selfUniqueAddress)) {
+        if (leaderActionCounter >= firstNotice)
+          logInfo("Leader can perform its duties again")
+        leaderActionCounter = 0
         leaderActionsOnConvergence()
+      } else {
+        if (cluster.settings.AllowWeaklyUpMembers)
+          moveJoiningToWeaklyUp()
+
+        leaderActionCounter += 1
+        if (leaderActionCounter == firstNotice || leaderActionCounter % periodicNotice == 0)
+          logInfo(
+            "Leader can currently not perform its duties, reachability status: [{}], member status: [{}]",
+            latestGossip.reachabilityExcludingDownedObservers,
+            latestGossip.members.map(m ⇒
+              s"${m.address} ${m.status} seen=${latestGossip.seenByNode(m.uniqueAddress)}").mkString(", "))
+      }
     }
+    shutdownSelfWhenDown()
+  }
+
+  def shutdownSelfWhenDown(): Unit = {
+    if (latestGossip.member(selfUniqueAddress).status == Down) {
+      // When all reachable have seen the state this member will shutdown itself when it has
+      // status Down. The down commands should spread before we shutdown.
+      val unreachable = latestGossip.overview.reachability.allUnreachableOrTerminated
+      val downed = latestGossip.members.collect { case m if m.status == Down ⇒ m.uniqueAddress }
+      if (downed.forall(node ⇒ unreachable(node) || latestGossip.seenByNode(node))) {
+        // the reason for not shutting down immediately is to give the gossip a chance to spread
+        // the downing information to other downed nodes, so that they can shutdown themselves
+        logInfo("Shutting down myself")
+        // not crucial to send gossip, but may speedup removal since fallback to failure detection is not needed
+        // if other downed know that this node has seen the version
+        gossipRandomN(MaxGossipsBeforeShuttingDownMyself)
+        shutdown()
+      }
+    }
+  }
+
+  def isMinNrOfMembersFulfilled: Boolean = {
+    latestGossip.members.size >= MinNrOfMembers && MinNrOfMembersOfRole.forall {
+      case (role, threshold) ⇒ latestGossip.members.count(_.hasRole(role)) >= threshold
+    }
+  }
 
   /**
    * Leader actions are as follows:
    * 1. Move JOINING     => UP                   -- When a node joins the cluster
-   * 2. Move LEAVING     => EXITING              -- When all partition handoff has completed
-   * 3. Non-exiting remain                       -- When all partition handoff has completed
+   * 2. Move LEAVING     => EXITING              --
+   * 3. Non-exiting remain                       --
    * 4. Move unreachable EXITING => REMOVED      -- When all nodes have seen the EXITING node as unreachable (convergence) -
    *                                                remove the node from the node ring and seen table
    * 5. Move unreachable DOWN/EXITING => REMOVED -- When all nodes have seen that the node is DOWN/EXITING (convergence) -
@@ -781,17 +939,8 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     val localOverview = localGossip.overview
     val localSeen = localOverview.seen
 
-    val hasPartionHandoffCompletedSuccessfully: Boolean = {
-      // TODO implement partion handoff and a check if it is completed - now just returns TRUE - e.g. has completed successfully
-      true
-    }
-
-    def enoughMembers: Boolean = {
-      localMembers.size >= MinNrOfMembers && MinNrOfMembersOfRole.forall {
-        case (role, threshold) ⇒ localMembers.count(_.hasRole(role)) >= threshold
-      }
-    }
-    def isJoiningToUp(m: Member): Boolean = m.status == Joining && enoughMembers
+    val enoughMembers: Boolean = isMinNrOfMembersFulfilled
+    def isJoiningToUp(m: Member): Boolean = (m.status == Joining || m.status == WeaklyUp) && enoughMembers
 
     val removedUnreachable = for {
       node ← localOverview.reachability.allUnreachableOrTerminated
@@ -816,9 +965,8 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
           }
           m.copyUp(upNumber)
 
-        case m if m.status == Leaving && hasPartionHandoffCompletedSuccessfully ⇒
-          // Move LEAVING => EXITING (once we have a convergence on LEAVING
-          // *and* if we have a successful partition handoff)
+        case m if m.status == Leaving ⇒
+          // Move LEAVING => EXITING (once we have a convergence on LEAVING)
           m copy (status = Exiting)
       }
     }
@@ -827,15 +975,22 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
       // handle changes
 
       // replace changed members
-      val newMembers = changedMembers ++ localMembers -- removedUnreachable
+      val newMembers = changedMembers union localMembers diff removedUnreachable
 
       // removing REMOVED nodes from the `seen` table
       val removed = removedUnreachable.map(_.uniqueAddress)
-      val newSeen = localSeen -- removed
+      val newSeen = localSeen diff removed
       // removing REMOVED nodes from the `reachability` table
       val newReachability = localOverview.reachability.remove(removed)
       val newOverview = localOverview copy (seen = newSeen, reachability = newReachability)
-      val newGossip = localGossip copy (members = newMembers, overview = newOverview)
+      // Clear the VectorClock when member is removed. The change made by the leader is stamped
+      // and will propagate as is if there are no other changes on other nodes.
+      // If other concurrent changes on other nodes (e.g. join) the pruning is also
+      // taken care of when receiving gossips.
+      val newVersion = removed.foldLeft(localGossip.version) { (v, node) ⇒
+        v.prune(VectorClock.Node(vclockName(node)))
+      }
+      val newGossip = localGossip copy (members = newMembers, overview = newOverview, version = newVersion)
 
       updateLatestGossip(newGossip)
 
@@ -862,11 +1017,38 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
         // for downing. However, if those final gossip messages never arrive it is
         // alright to require the downing, because that is probably caused by a
         // network failure anyway.
-        for (_ ← 1 to NumberOfGossipsBeforeShutdownWhenLeaderExits) gossip()
+        gossipRandomN(NumberOfGossipsBeforeShutdownWhenLeaderExits)
         shutdown()
       }
 
     }
+  }
+
+  def moveJoiningToWeaklyUp(): Unit = {
+    val localGossip = latestGossip
+    val localMembers = localGossip.members
+
+    val enoughMembers: Boolean = isMinNrOfMembersFulfilled
+    def isJoiningToWeaklyUp(m: Member): Boolean =
+      m.status == Joining && enoughMembers && latestGossip.reachabilityExcludingDownedObservers.isReachable(m.uniqueAddress)
+    val changedMembers = localMembers.collect {
+      case m if isJoiningToWeaklyUp(m) ⇒ m.copy(status = WeaklyUp)
+    }
+
+    if (changedMembers.nonEmpty) {
+      // replace changed members
+      val newMembers = changedMembers union localMembers
+      val newGossip = localGossip.copy(members = newMembers)
+      updateLatestGossip(newGossip)
+
+      // log status changes
+      changedMembers foreach { m ⇒
+        logInfo("Leader is moving node [{}] to [{}]", m.address, m.status)
+      }
+
+      publish(latestGossip)
+    }
+
   }
 
   /**
@@ -909,12 +1091,13 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
           val (exiting, nonExiting) = newlyDetectedUnreachableMembers.partition(_.status == Exiting)
           if (nonExiting.nonEmpty)
-            log.warning("Cluster Node [{}] - Marking node(s) as UNREACHABLE [{}]", selfAddress, nonExiting.mkString(", "))
+            log.warning("Cluster Node [{}] - Marking node(s) as UNREACHABLE [{}]. Node roles [{}]", selfAddress, nonExiting.mkString(", "), selfRoles.mkString(", "))
           if (exiting.nonEmpty)
-            logInfo("Marking exiting node(s) as UNREACHABLE [{}]. This is expected and they will be removed.",
+            logInfo(
+              "Marking exiting node(s) as UNREACHABLE [{}]. This is expected and they will be removed.",
               exiting.mkString(", "))
           if (newlyDetectedReachableMembers.nonEmpty)
-            logInfo("Marking node(s) as REACHABLE [{}]", newlyDetectedReachableMembers.mkString(", "))
+            logInfo("Marking node(s) as REACHABLE [{}]. Node roles [{}]", newlyDetectedReachableMembers.mkString(", "), selfRoles.mkString(","))
 
           publish(latestGossip)
         }
@@ -956,7 +1139,7 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
   def validNodeForGossip(node: UniqueAddress): Boolean =
     (node != selfUniqueAddress && latestGossip.hasMember(node) &&
-      latestGossip.overview.reachability.isReachable(node))
+      latestGossip.reachabilityExcludingDownedObservers.isReachable(node))
 
   def updateLatestGossip(newGossip: Gossip): Unit = {
     // Updating the vclock version for the changes
@@ -965,7 +1148,12 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     val seenVersionedGossip = versionedGossip onlySeen (selfUniqueAddress)
     // Update the state with the new gossip
     latestGossip = seenVersionedGossip
+    assertLatestGossip()
   }
+
+  def assertLatestGossip(): Unit =
+    if (Cluster.isAssertInvariantsEnabled && latestGossip.version.versions.size > latestGossip.members.size)
+      throw new IllegalStateException(s"Too many vector clock entries in gossip state ${latestGossip}")
 
   def publish(newGossip: Gossip): Unit = {
     publisher ! PublishChanges(newGossip)
@@ -1101,36 +1289,49 @@ private[cluster] final class JoinSeedNodeProcess(seedNodes: immutable.IndexedSeq
 /**
  * INTERNAL API
  *
- * The supplied callback will be run, once, when current cluster member is `Up`.
+ * The supplied callback will be run, once, when current cluster member come up with the same status.
  */
-private[cluster] class OnMemberUpListener(callback: Runnable) extends Actor with ActorLogging {
+private[cluster] class OnMemberStatusChangedListener(callback: Runnable, status: MemberStatus) extends Actor with ActorLogging {
   import ClusterEvent._
-  val cluster = Cluster(context.system)
-  // subscribe to MemberUp, re-subscribe when restart
+  private val cluster = Cluster(context.system)
+  private val to = status match {
+    case Up      ⇒ classOf[MemberUp]
+    case Removed ⇒ classOf[MemberRemoved]
+    case other ⇒ throw new IllegalArgumentException(
+      s"Expected Up or Removed in OnMemberStatusChangedListener, got [$other]")
+  }
+
   override def preStart(): Unit =
-    cluster.subscribe(self, classOf[MemberUp])
-  override def postStop(): Unit =
+    cluster.subscribe(self, to)
+
+  override def postStop(): Unit = {
+    if (status == Removed)
+      done()
     cluster.unsubscribe(self)
+  }
 
   def receive = {
     case state: CurrentClusterState ⇒
-      if (state.members.exists(isSelfUp(_)))
+      if (state.members.exists(isTriggered))
         done()
-    case MemberUp(m) ⇒
-      if (isSelfUp(m))
+    case MemberUp(member) ⇒
+      if (isTriggered(member))
+        done()
+    case MemberRemoved(member, _) ⇒
+      if (isTriggered(member))
         done()
   }
 
-  def done(): Unit = {
+  private def done(): Unit = {
     try callback.run() catch {
-      case NonFatal(e) ⇒ log.error(e, "OnMemberUp callback failed with [{}]", e.getMessage)
+      case NonFatal(e) ⇒ log.error(e, "[{}] callback failed with [{}]", s"On${to.getSimpleName}", e.getMessage)
     } finally {
       context stop self
     }
   }
 
-  def isSelfUp(m: Member): Boolean =
-    m.uniqueAddress == cluster.selfUniqueAddress && m.status == MemberStatus.Up
+  private def isTriggered(m: Member): Boolean =
+    m.uniqueAddress == cluster.selfUniqueAddress && m.status == status
 
 }
 
@@ -1140,10 +1341,10 @@ private[cluster] class OnMemberUpListener(callback: Runnable) extends Actor with
 @SerialVersionUID(1L)
 private[cluster] final case class GossipStats(
   receivedGossipCount: Long = 0L,
-  mergeCount: Long = 0L,
-  sameCount: Long = 0L,
-  newerCount: Long = 0L,
-  olderCount: Long = 0L) {
+  mergeCount:          Long = 0L,
+  sameCount:           Long = 0L,
+  newerCount:          Long = 0L,
+  olderCount:          Long = 0L) {
 
   def incrementMergeCount(): GossipStats =
     copy(mergeCount = mergeCount + 1, receivedGossipCount = receivedGossipCount + 1)
@@ -1183,5 +1384,5 @@ private[cluster] final case class GossipStats(
 @SerialVersionUID(1L)
 private[cluster] final case class VectorClockStats(
   versionSize: Int = 0,
-  seenLatest: Int = 0)
+  seenLatest:  Int = 0)
 

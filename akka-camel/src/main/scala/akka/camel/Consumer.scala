@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.camel
@@ -14,8 +14,6 @@ import scala.language.existentials
 
 /**
  * Mixed in by Actor implementations that consume message from Camel endpoints.
- *
- *
  */
 trait Consumer extends Actor with CamelSupport {
   import Consumer._

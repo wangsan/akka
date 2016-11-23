@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.osgi
 
@@ -51,11 +51,11 @@ class PingPongActorSystemActivatorTest extends WordSpec with Matchers with PojoS
     "stop the ActorSystem when bundle stops" in {
       filterErrors() {
         val system = serviceForType[ActorSystem]
-        system.isTerminated should be(false)
+        system.whenTerminated.isCompleted should be(false)
 
         bundleForName(TEST_BUNDLE_NAME).stop()
-        system.awaitTermination()
-        system.isTerminated should be(true)
+        Await.ready(system.whenTerminated, Duration.Inf)
+        system.whenTerminated.isCompleted should be(true)
       }
     }
   }

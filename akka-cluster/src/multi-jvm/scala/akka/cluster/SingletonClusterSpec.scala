@@ -1,8 +1,9 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
+import akka.actor.Address
 import com.typesafe.config.ConfigFactory
 import akka.remote.testkit.MultiNodeConfig
 import akka.remote.testkit.MultiNodeSpec
@@ -45,9 +46,10 @@ abstract class SingletonClusterSpec(multiNodeConfig: SingletonClusterMultiNodeCo
 
     "become singleton cluster when started with seed-nodes" taggedAs LongRunningTest in {
       runOn(first) {
-        cluster.joinSeedNodes(Vector(first))
+        val nodes: immutable.IndexedSeq[Address] = Vector(first) //
+        cluster.joinSeedNodes(nodes)
         awaitMembersUp(1)
-        clusterView.isSingletonCluster should be(true)
+        clusterView.isSingletonCluster should ===(true)
       }
 
       enterBarrier("after-1")
@@ -55,7 +57,7 @@ abstract class SingletonClusterSpec(multiNodeConfig: SingletonClusterMultiNodeCo
 
     "not be singleton cluster when joined with other node" taggedAs LongRunningTest in {
       awaitClusterUp(first, second)
-      clusterView.isSingletonCluster should be(false)
+      clusterView.isSingletonCluster should ===(false)
       assertLeader(first, second)
 
       enterBarrier("after-2")
@@ -69,7 +71,7 @@ abstract class SingletonClusterSpec(multiNodeConfig: SingletonClusterMultiNodeCo
         markNodeAsUnavailable(secondAddress)
 
         awaitMembersUp(numberOfMembers = 1, canNotBePartOfMemberRing = Set(secondAddress), 30.seconds)
-        clusterView.isSingletonCluster should be(true)
+        clusterView.isSingletonCluster should ===(true)
         awaitCond(clusterView.isLeader)
       }
 

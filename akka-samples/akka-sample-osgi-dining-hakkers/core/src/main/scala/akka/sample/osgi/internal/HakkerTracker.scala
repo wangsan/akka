@@ -1,6 +1,6 @@
 package akka.sample.osgi.internal
 
-import akka.persistence.EventsourcedProcessor
+import akka.persistence.PersistentActor
 import akka.actor.ActorRef
 import akka.sample.osgi.api.HakkerStateChange
 import akka.sample.osgi.api.SubscribeToHakkerStateChanges
@@ -27,10 +27,12 @@ object HakkerTracker {
   }
 }
 
-class HakkerTracker extends EventsourcedProcessor {
+class HakkerTracker extends PersistentActor {
   import HakkerTracker._
 
   var state = State.empty
+
+  override def persistenceId: String = "hakkerTracker"
 
   override def receiveRecover: Receive = {
     case evt: DomainEvent =>
@@ -52,7 +54,7 @@ class HakkerTracker extends EventsourcedProcessor {
       }
 
     case GetEatingCount(name) =>
-      sender ! EatingCount(name, 17)
+      sender() ! EatingCount(name, 17)
   }
 
 }

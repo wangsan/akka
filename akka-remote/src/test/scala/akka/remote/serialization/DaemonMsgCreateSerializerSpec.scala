@@ -1,28 +1,29 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.remote.serialization
 
 import language.postfixOps
-
 import akka.serialization.SerializationExtension
 import com.typesafe.config.ConfigFactory
 import akka.testkit.AkkaSpec
 import akka.actor.{ Actor, Address, Props, Deploy, OneForOneStrategy, SupervisorStrategy }
 import akka.remote.{ DaemonMsgCreate, RemoteScope }
 import akka.routing.{ RoundRobinPool, FromConfig }
+import akka.util.IgnoreForScala212
 import scala.concurrent.duration._
 
 object DaemonMsgCreateSerializerSpec {
   class MyActor extends Actor {
-    def receive = {
-      case _ ⇒
-    }
+    def receive = Actor.emptyBehavior
+  }
+
+  class MyActorWithParam(ignore: String) extends Actor {
+    def receive = Actor.emptyBehavior
   }
 }
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class DaemonMsgCreateSerializerSpec extends AkkaSpec {
 
   import DaemonMsgCreateSerializerSpec._
@@ -32,7 +33,7 @@ class DaemonMsgCreateSerializerSpec extends AkkaSpec {
   "Serialization" must {
 
     "resolve DaemonMsgCreateSerializer" in {
-      ser.serializerFor(classOf[DaemonMsgCreate]).getClass should be(classOf[DaemonMsgCreateSerializer])
+      ser.serializerFor(classOf[DaemonMsgCreate]).getClass should ===(classOf[DaemonMsgCreateSerializer])
     }
 
     "serialize and de-serialize DaemonMsgCreate with FromClassCreator" in {
@@ -45,7 +46,17 @@ class DaemonMsgCreateSerializerSpec extends AkkaSpec {
       }
     }
 
-    "serialize and de-serialize DaemonMsgCreate with function creator" in {
+    "serialize and de-serialize DaemonMsgCreate with FromClassCreator, with null parameters for Props" in {
+      verifySerialization {
+        DaemonMsgCreate(
+          props = Props(classOf[MyActorWithParam], null),
+          deploy = Deploy(),
+          path = "foo",
+          supervisor = supervisor)
+      }
+    }
+
+    "serialize and de-serialize DaemonMsgCreate with function creator" taggedAs IgnoreForScala212 in {
       verifySerialization {
         DaemonMsgCreate(
           props = Props(new MyActor),
@@ -87,17 +98,17 @@ class DaemonMsgCreateSerializerSpec extends AkkaSpec {
 
     def assertDaemonMsgCreate(expected: DaemonMsgCreate, got: DaemonMsgCreate): Unit = {
       // can't compare props.creator when function
-      assert(got.props.clazz === expected.props.clazz)
-      assert(got.props.args.length === expected.props.args.length)
+      got.props.clazz should ===(expected.props.clazz)
+      got.props.args.length should ===(expected.props.args.length)
       got.props.args zip expected.props.args foreach {
         case (g, e) ⇒
           if (e.isInstanceOf[Function0[_]]) ()
-          else assert(g === e)
+          else g should ===(e)
       }
-      assert(got.props.deploy === expected.props.deploy)
-      assert(got.deploy === expected.deploy)
-      assert(got.path === expected.path)
-      assert(got.supervisor === expected.supervisor)
+      got.props.deploy should ===(expected.props.deploy)
+      got.deploy should ===(expected.deploy)
+      got.path should ===(expected.path)
+      got.supervisor should ===(expected.supervisor)
     }
 
   }

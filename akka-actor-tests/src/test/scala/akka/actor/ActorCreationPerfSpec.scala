@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.actor
 
@@ -7,12 +7,10 @@ import scala.language.postfixOps
 
 import akka.testkit.{ PerformanceTest, ImplicitSender, AkkaSpec }
 import scala.concurrent.duration._
-import akka.TestUtils
 import akka.testkit.metrics._
 import org.scalatest.BeforeAndAfterAll
-import java.io.PrintStream
-import java.util.concurrent.TimeUnit
 import akka.testkit.metrics.HeapMemoryUsage
+import com.codahale.metrics.{ Histogram }
 
 object ActorCreationPerfSpec {
 
@@ -35,19 +33,21 @@ object ActorCreationPerfSpec {
     }
   }
 
-  class TimingDriver(hist: HdrHistogram) extends Actor {
+  class TimingDriver(hist: Histogram) extends Actor {
 
     def receive = {
       case IsAlive ⇒
         sender() ! Alive
       case Create(number, propsCreator) ⇒
+
         for (i ← 1 to number) {
-          val s = System.nanoTime()
-
+          val start = System.nanoTime()
           context.actorOf(propsCreator.apply())
-
-          hist.update(System.nanoTime - s)
+          // yes, we are aware of this being skewed
+          val stop = System.nanoTime()
+          hist.update(stop - start)
         }
+
         sender() ! Created
       case WaitForChildren ⇒
         context.children.foreach(_ ! IsAlive)
@@ -98,7 +98,6 @@ object ActorCreationPerfSpec {
   }
 }
 
-@org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class ActorCreationPerfSpec extends AkkaSpec("akka.actor.serialize-messages = off") with ImplicitSender
   with MetricsKit with BeforeAndAfterAll {
 
@@ -114,7 +113,7 @@ class ActorCreationPerfSpec extends AkkaSpec("akka.actor.serialize-messages = of
   val nrOfRepeats: Int = Integer.getInteger("akka.test.actor.ActorPerfSpec.numberOfRepeats", 3)
 
   def runWithCounterInside(metricName: String, scenarioName: String, number: Int, propsCreator: () ⇒ Props) {
-    val hist = histogram(BlockingTimeKey / metricName, 100.millis.toNanos, 5, "ns")
+    val hist = histogram(BlockingTimeKey / metricName)
 
     val driver = system.actorOf(Props(classOf[TimingDriver], hist), scenarioName)
     driver ! IsAlive
@@ -127,8 +126,8 @@ class ActorCreationPerfSpec extends AkkaSpec("akka.actor.serialize-messages = of
     expectMsgPF(15 seconds, s"$scenarioName waiting for Waited") { case Waited ⇒ }
 
     driver ! PoisonPill
-    TestUtils.verifyActorTermination(driver, 15 seconds)
-
+    watch(driver)
+    expectTerminated(driver, 15.seconds)
     gc()
   }
 
@@ -152,7 +151,8 @@ class ActorCreationPerfSpec extends AkkaSpec("akka.actor.serialize-messages = of
     val after = mem.getHeapSnapshot
 
     driver ! PoisonPill
-    TestUtils.verifyActorTermination(driver, 15 seconds)
+    watch(driver)
+    expectTerminated(driver, 15.seconds)
 
     after diff before
   }
@@ -219,5 +219,5 @@ class ActorCreationPerfSpec extends AkkaSpec("akka.actor.serialize-messages = of
 
   override def afterTermination() = shutdownMetrics()
 
-  override def expectedTestDuration = 2 minutes
+  override def expectedTestDuration = 5 minutes
 }

@@ -18,7 +18,7 @@ but in this sample we use a best effort re-connect approach.
 
 Read the following source code. The inlined comments explain the different pieces of
 the fault handling and why they are added. It is also highly recommended to run this
-sample as it is easy to follow the log output to understand what is happening in runtime.
+sample as it is easy to follow the log output to understand what is happening at runtime.
 
 .. toctree::
 
@@ -116,7 +116,7 @@ Test Application
 ----------------
 
 The following section shows the effects of the different directives in practice,
-wherefor a test setup is needed. First off, we need a suitable supervisor:
+where a test setup is needed. First off, we need a suitable supervisor:
 
 .. includecode:: code/docs/actor/FaultHandlingDocSpec.scala
    :include: supervisor
@@ -126,9 +126,7 @@ This supervisor will be used to create a child, with which we can experiment:
 .. includecode:: code/docs/actor/FaultHandlingDocSpec.scala
    :include: child
 
-The test is easier by using the utilities described in :ref:`akka-testkit`,
-where ``AkkaSpec`` is a convenient mixture of ``TestKit with WordSpec with
-MustMatchers``
+The test is easier by using the utilities described in :ref:`akka-testkit`.
 
 .. includecode:: code/docs/actor/FaultHandlingDocSpec.scala
    :include: testkit

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.actor
 
@@ -53,13 +53,13 @@ class Listener extends Actor with ActorLogging {
       log.info("Current progress: {} %", percent)
       if (percent >= 100.0) {
         log.info("That's all, shutting down")
-        context.system.shutdown()
+        context.system.terminate()
       }
 
     case ReceiveTimeout =>
       // No progress within 15 seconds, ServiceUnavailable
       log.error("Shutting down due to unavailable service")
-      context.system.shutdown()
+      context.system.terminate()
   }
 }
 
@@ -95,7 +95,7 @@ class Worker extends Actor with ActorLogging {
 
   def receive = LoggingReceive {
     case Start if progressListener.isEmpty =>
-      progressListener = Some(sender)
+      progressListener = Some(sender())
       context.system.scheduler.schedule(Duration.Zero, 1 second, self, Do)
 
     case Do =>
@@ -113,7 +113,8 @@ class Worker extends Actor with ActorLogging {
 //#messages
 object CounterService {
   final case class Increment(n: Int)
-  case object GetCurrentCount
+  sealed abstract class GetCurrentCount
+  case object GetCurrentCount extends GetCurrentCount
   final case class CurrentCount(key: String, count: Long)
   class ServiceUnavailable(msg: String) extends RuntimeException(msg)
 
@@ -133,10 +134,11 @@ class CounterService extends Actor {
 
   // Restart the storage child when StorageException is thrown.
   // After 3 restarts within 5 seconds it will be stopped.
-  override val supervisorStrategy = OneForOneStrategy(maxNrOfRetries = 3,
+  override val supervisorStrategy = OneForOneStrategy(
+    maxNrOfRetries = 3,
     withinTimeRange = 5 seconds) {
-      case _: Storage.StorageException => Restart
-    }
+    case _: Storage.StorageException => Restart
+  }
 
   val key = self.path.name
   var storage: Option[ActorRef] = None
@@ -176,9 +178,9 @@ class CounterService extends Actor {
       for ((replyTo, msg) <- backlog) c.tell(msg, sender = replyTo)
       backlog = IndexedSeq.empty
 
-    case msg @ Increment(n)    => forwardOrPlaceInBacklog(msg)
+    case msg: Increment       => forwardOrPlaceInBacklog(msg)
 
-    case msg @ GetCurrentCount => forwardOrPlaceInBacklog(msg)
+    case msg: GetCurrentCount => forwardOrPlaceInBacklog(msg)
 
     case Terminated(actorRef) if Some(actorRef) == storage =>
       // After 3 restarts the storage child is stopped.

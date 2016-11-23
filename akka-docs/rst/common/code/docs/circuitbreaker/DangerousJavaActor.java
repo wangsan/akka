@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2014 Typesafe Inc. <http://www.typesafe.com>
+ * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.circuitbreaker;
 
@@ -51,29 +51,16 @@ public class DangerousJavaActor extends UntypedActor {
     if (message instanceof String) {
       String m = (String) message;
       if ("is my middle name".equals(m)) {
-        final Future<String> f = future(
-          new Callable<String>() {
-            public String call() {
-              return dangerousCall();
-            }
-          }, getContext().dispatcher());
-
-        pipe(breaker.callWithCircuitBreaker(
-          new Callable<Future<String>>() {
-            public Future<String> call() throws Exception {
-              return f;
-            }
-          }), getContext().dispatcher()).to(getSender());
+        pipe(
+          breaker.callWithCircuitBreaker(() -> 
+            future(() -> dangerousCall(), getContext().dispatcher())
+          ), getContext().dispatcher()
+        ).to(getSender());
       }
       if ("block for me".equals(m)) {
         getSender().tell(breaker
           .callWithSyncCircuitBreaker(
-            new Callable<String>() {
-              @Override
-              public String call() throws Exception {
-                return dangerousCall();
-              }
-            }), getSelf());
+            () -> dangerousCall()), getSelf());
       }
     }
   }
